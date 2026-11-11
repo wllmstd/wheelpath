@@ -4,7 +4,9 @@ export type Surface = 'smooth' | 'fair' | 'rough' | 'broken';
 export type Curb = 'ok' | 'steep' | 'missing' | 'unknown' | null;
 export type EdgeKind = 'sidewalk' | 'stairs' | 'path';
 export type Severity = 1 | 2 | 3;
-export type HazardType = 'pavement' | 'ramp' | 'obstruction' | 'drain' | 'narrow' | 'flood' | 'other';
+export type HazardType = 'pavement' | 'ramp' | 'obstruction' | 'drain' | 'narrow' | 'flood' | 'works' | 'other';
+/** where a value came from: field survey, a user report, or the prototype's simulation */
+export type DataSource = 'survey' | 'user' | 'simulated';
 export type PlaceCat = 'health' | 'gov' | 'market' | 'school' | 'worship' | 'transport' | 'food' | 'bank';
 export type AccessClass = 'accessible' | 'partial' | 'not' | 'limited';
 
@@ -33,8 +35,10 @@ export interface GEdge {
   chunk: number;
   mx: number;
   my: number;
-  /** true when the edge has (simulated or surveyed) accessibility values */
+  /** true when the edge has accessibility values (see `source` for where they came from) */
   surveyed: boolean;
+  /** origin of the width / slope / surface values */
+  source?: DataSource;
   /** inside the data area but deliberately left without values */
   gap?: boolean;
   width?: number;
@@ -42,15 +46,25 @@ export interface GEdge {
   surface?: Surface;
 }
 
+/** Fixed geographic geometry of a hazard (GeoJSON, [lng, lat]). Never screen coordinates. */
+export type HazardGeometry =
+  | { type: 'Point'; coordinates: LngLat }
+  | { type: 'LineString'; coordinates: LngLat[] }
+  | { type: 'Polygon'; coordinates: LngLat[][] };
+
+/** a stretch of one pathway segment affected by a hazard (t: 0 = node a, 1 = node b) */
+export interface HazardSpan { edgeId: string; t0: number; t1: number }
+
 export interface Hazard {
   id: string;
-  edgeId: string;
-  /** position along the edge, 0 = node a, 1 = node b */
-  t: number;
   type: HazardType;
   sev: Severity;
-  seed?: boolean;
-  ll?: LngLat;
+  source: DataSource;
+  geometry: HazardGeometry;
+  /** computed by the engine (spatial join with the pathway network) */
+  spans?: HazardSpan[];
+  /** computed by the engine: a representative point for distances and the details card */
+  anchor?: LngLat;
 }
 
 export interface Comment { who: string; text: string; ago: string }
@@ -68,13 +82,27 @@ export interface Report {
   simulated: boolean;
 }
 
+export interface PlaceInfo {
+  /** OpenStreetMap feature, e.g. "node/123" */
+  osm?: string;
+  /** raw OSM kind, e.g. "pharmacy" */
+  kind?: string;
+  address?: string;
+  hours?: string;
+  phone?: string;
+  website?: string;
+  /** OpenStreetMap wheelchair=* tag, if mapped (not verified by WheelPath) */
+  wheelchair?: string;
+  /** where the coordinates come from */
+  position: string;
+}
+
 export interface Place {
   id: string;
   name: string;
   cat: PlaceCat;
   ll: LngLat;
-  hours: string;
-  note: string;
+  info: PlaceInfo;
 }
 
 export interface NetworkMeta {
@@ -135,6 +163,8 @@ export interface Barrier {
   edgeId: string;
   hazardId?: string;
   nodeId?: string;
+  /** for hazards that cover a stretch: where the stretch ends along the route */
+  sEnd?: number;
   sev?: Severity;
 }
 

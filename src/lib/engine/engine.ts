@@ -2,7 +2,9 @@
    virtual start/end nodes, alternatives, route analysis and turn-by-turn. */
 import { angDiff, bearing, cardinal, haversine, lerp, makeProjection, pointInPolygon, segProject, type Projection } from './geo';
 import { CURB_STARS, HAZARD_TYPES, HZ_PTS, RULES, SURF_STARS, fmt, hazardStars, starsSlope, starsWidth } from './rules';
-import type { AccessClass, Barrier, EdgeEval, GEdge, GNode, Hazard, Issue, Leg, LngLat, NavIcon, NavState, Network, Place, Plan, Prefs, Route, Seg, Snap } from './types';
+import type { AccessClass, Barrier, EdgeEval, GEdge, GNode, Hazard, HazardGeometry, HazardSpan, Issue, Leg, LngLat, NavIcon, NavState, Network, Place, Plan, Prefs, Route, Seg, Snap } from './types';
+
+interface SpanRef { h: Hazard; t0: number; t1: number }
 
 interface Ctx { wW: number; wS: number; wF: number; hazM: number; critM: number; stairsM: number; steepM: number; unk: number; nMissing: number; nSteep: number; nUnknown: number; penal: Record<string, number> | null }
 interface Geo { ax: number; ay: number; bx: number; by: number; la: LngLat; lb: LngLat }
@@ -33,7 +35,7 @@ export class Engine {
   private adj: Record<string, { e: GEdge; to: string }[]> = {};
   private g: Record<string, Geo> = {};
   hazards: Hazard[] = [];
-  private byEdge: Record<string, Hazard[]> = {};
+  private byEdge: Record<string, SpanRef[]> = {};
   private rev = 0;
   private evCache = new Map<string, { rev: number; ev: EdgeEval }>();
 
@@ -52,15 +54,98 @@ export class Engine {
   edgeAt(e: GEdge, t: number): LngLat { const g = this.g[e.id]; return lerp(g.la, g.lb, t); }
   edgeCoords(e: GEdge): [LngLat, LngLat] { const g = this.g[e.id]; return [g.la, g.lb]; }
 
+  /** Attach every hazard's fixed geometry to the pathway stretches it touches (spatial join). */
   setHazards(list: Hazard[]) {
     this.hazards = list; this.byEdge = {}; this.rev++;
-    for (const h of list) { (this.byEdge[h.edgeId] ||= []).push(h); h.ll = this.edgeAt(this.byId[h.edgeId], h.t); }
+    for (const h of list) {
+      h.spans = this.spansFor(h.geometry);
+      h.anchor = this.anchorOf(h.geometry);
+      for (const sp of h.spans) (this.byEdge[sp.edgeId] ||= []).push({ h, t0: sp.t0, t1: sp.t1 });
+    }
   }
-  hazardsOn(edgeId: string) { return this.byEdge[edgeId] || []; }
+  /** unique hazards touching an edge */
+  hazardsOn(edgeId: string): Hazard[] { return [...new Set((this.byEdge[edgeId] || []).map((r) => r.h))]; }
+
+  anchorOf(g: HazardGeometry): LngLat {
+    if (g.type === 'Point') return g.coordinates;
+    if (g.type === 'LineString') {
+      const loc = g.coordinates.map((c) => this.P.toLocal(c)); let total = 0;
+      for (let i = 1; i < loc.length; i++) total += Math.hypot(loc[i][0] - loc[i - 1][0], loc[i][1] - loc[i - 1][1]);
+      let acc = 0;
+      for (let i = 1; i < loc.length; i++) {
+        const d = Math.hypot(loc[i][0] - loc[i - 1][0], loc[i][1] - loc[i - 1][1]);
+        if (acc + d >= total / 2) { const t = d ? (total / 2 - acc) / d : 0; return this.P.fromLocal(loc[i - 1][0] + (loc[i][0] - loc[i - 1][0]) * t, loc[i - 1][1] + (loc[i][1] - loc[i - 1][1]) * t); }
+        acc += d;
+      }
+      return g.coordinates[0];
+    }
+    const ring = g.coordinates[0].slice(0, -1);
+    return [ring.reduce((a, c) => a + c[0], 0) / ring.length, ring.reduce((a, c) => a + c[1], 0) / ring.length];
+  }
+  /** length (m) of a line or area (m²) of a polygon, for the details card */
+  measure(g: HazardGeometry): number {
+    if (g.type === 'Point') return 0;
+    const loc = (g.type === 'LineString' ? g.coordinates : g.coordinates[0]).map((c) => this.P.toLocal(c));
+    if (g.type === 'LineString') { let d = 0; for (let i = 1; i < loc.length; i++) d += Math.hypot(loc[i][0] - loc[i - 1][0], loc[i][1] - loc[i - 1][1]); return d; }
+    let a = 0; for (let i = 0, j = loc.length - 1; i < loc.length; j = i++) a += (loc[j][0] + loc[i][0]) * (loc[j][1] - loc[i][1]);
+    return Math.abs(a / 2);
+  }
+  /** Which pathway stretches a geometry affects. Points snap to the nearest pathway within RULES.attachPoint;
+      lines affect stretches within RULES.attachLine of the line; polygons affect stretches inside them. */
+  spansFor(g: HazardGeometry): HazardSpan[] {
+    if (g.type === 'Point') {
+      const [px, py] = this.P.toLocal(g.coordinates);
+      let best: { e: GEdge; t: number; d: number } | null = null;
+      for (const e of this.edges) {
+        if (e.kind === 'stairs') continue;
+        const k = this.g[e.id], r = segProject(px, py, k.ax, k.ay, k.bx, k.by);
+        if (!best || r.d < best.d) best = { e, t: r.t, d: r.d };
+      }
+      return best && best.d <= RULES.attachPoint ? [{ edgeId: best.e.id, t0: best.t, t1: best.t }] : [];
+    }
+    const line = g.type === 'LineString' ? g.coordinates.map((c) => this.P.toLocal(c)) : null;
+    const ring = g.type === 'Polygon' ? g.coordinates[0] : null;
+    const pts = (line || ring!.map((c) => this.P.toLocal(c)));
+    const minX = Math.min(...pts.map((p) => p[0])) - 10, maxX = Math.max(...pts.map((p) => p[0])) + 10, minY = Math.min(...pts.map((p) => p[1])) - 10, maxY = Math.max(...pts.map((p) => p[1])) + 10;
+    const inside = (x: number, y: number) => {
+      if (line) { for (let i = 1; i < line.length; i++) if (segProject(x, y, line[i - 1][0], line[i - 1][1], line[i][0], line[i][1]).d <= RULES.attachLine) return true; return false; }
+      return pointInPolygon(this.P.fromLocal(x, y), ring!);
+    };
+    const out: HazardSpan[] = [];
+    for (const e of this.edges) {
+      const k = this.g[e.id];
+      if (Math.max(k.ax, k.bx) < minX || Math.min(k.ax, k.bx) > maxX || Math.max(k.ay, k.by) < minY || Math.min(k.ay, k.by) > maxY) continue;
+      const n = Math.max(2, Math.ceil(e.len / 1.5));
+      let start = -1;
+      for (let i = 0; i <= n; i++) {
+        const t = i / n, x = k.ax + (k.bx - k.ax) * t, y = k.ay + (k.by - k.ay) * t, inn = inside(x, y);
+        if (inn && start < 0) start = i;
+        if ((!inn || i === n) && start >= 0) { const end = inn ? i : i - 1; out.push({ edgeId: e.id, t0: start / n, t1: end / n }); start = -1; }
+      }
+    }
+    /* drop tiny touches of a line on a crossing street (less than 2 m) */
+    return out.filter((sp) => g.type !== 'LineString' || (sp.t1 - sp.t0) * this.byId[sp.edgeId].len >= 2);
+  }
+
+  /* ---------------- network helpers used by navigation ---------------- */
+  adjacent(nodeId: string) { return this.adj[nodeId] || []; }
+  /** a point `dist` metres from a node along one of its edges */
+  pointFromNode(e: GEdge, nodeId: string, dist: number): LngLat {
+    const t = Math.min(1, dist / Math.max(1, e.len));
+    return this.edgeAt(e, e.a === nodeId ? t : 1 - t);
+  }
+  /** distance along a route reached after `t` seconds of travel (inverse of timeAt) */
+  sAtTime(R: Route, t: number): number {
+    const c = R.cumT; if (t <= 0) return 0; if (t >= c[c.length - 1]) return R.length;
+    let lo = 0, hi = c.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (c[mid] <= t) lo = mid; else hi = mid; }
+    const f = c[hi] - c[lo] ? (t - c[lo]) / (c[hi] - c[lo]) : 0;
+    return R.cum[lo] + (R.cum[hi] - R.cum[lo]) * f;
+  }
 
   evalEdge(e: GEdge): EdgeEval {
     const c = this.evCache.get(e.id); if (c && c.rev === this.rev) return c.ev;
-    const hs = this.byEdge[e.id] || [], crit: Issue[] = [], warn: Issue[] = [];
+    const hs = this.hazardsOn(e.id), crit: Issue[] = [], warn: Issue[] = [];
     let pts = 0;
     for (const h of hs) {
       pts += HZ_PTS[h.sev];
@@ -102,7 +187,9 @@ export class Engine {
     for (const x of ev.crit) if (x.kind !== 'hazard') extra += x.code === 'stairs' ? c.stairsM : c.critM;
     if (ev.known && Math.abs(e.slope!) > RULES.rampGrade) extra += c.steepM;
     cost += extra * frac;
-    for (const h of ev.hz) if (h.t >= lo - 1e-9 && h.t <= hi + 1e-9) cost += HZ_PTS[h.sev] * c.hazM + (h.sev === 3 ? c.critM : 0);
+    const met = new Set<Hazard>();
+    for (const r of this.byEdge[e.id] || []) if (r.t1 >= lo - 1e-9 && r.t0 <= hi + 1e-9) met.add(r.h);
+    for (const h of met) cost += HZ_PTS[h.sev] * c.hazM + (h.sev === 3 ? c.critM : 0);
     if (c.penal && c.penal[e.id]) cost *= c.penal[e.id];
     return cost;
   }
@@ -192,13 +279,15 @@ export class Engine {
       for (const x of ev.warn) if (x.kind !== 'hazard') barriers.push({ kind: 'caution', code: x.code, label: x.label, where: e.name, s: mid, ll, edgeId: e.id });
       if (!ev.known) barriers.push({ kind: 'unverified', code: 'unverified', label: 'No accessibility data for this stretch', where: e.name, s: mid, ll, edgeId: e.id });
       const lo = Math.min(sg.t0, sg.t1), hi = Math.max(sg.t0, sg.t1);
-      for (const h of this.byEdge[e.id] || []) {
-        if (h.t >= lo - 1e-9 && h.t <= hi + 1e-9 && !seenHz[h.id]) {
-          seenHz[h.id] = 1;
-          const hs = sg.s0 + Math.abs(h.t - sg.t0) * e.len;
-          hazardsOn.push({ h, s: hs });
-          barriers.push({ kind: h.sev === 3 ? 'critical' : 'caution', code: 'hazard', label: HAZARD_TYPES[h.type].label, where: e.name, s: hs, ll: h.ll!, edgeId: e.id, hazardId: h.id, sev: h.sev });
-        }
+      for (const r of this.byEdge[e.id] || []) {
+        const a = Math.max(lo, r.t0), b = Math.min(hi, r.t1);
+        if (b < a - 1e-9 || seenHz[r.h.id]) continue;
+        seenHz[r.h.id] = 1;
+        /* where along the route the traveller first meets the hazard, and where its stretch ends */
+        const tIn = sg.t1 >= sg.t0 ? a : b, tOut = sg.t1 >= sg.t0 ? b : a;
+        const hs = sg.s0 + Math.abs(tIn - sg.t0) * e.len, he = sg.s0 + Math.abs(tOut - sg.t0) * e.len;
+        hazardsOn.push({ h: r.h, s: hs });
+        barriers.push({ kind: r.h.sev === 3 ? 'critical' : 'caution', code: 'hazard', label: HAZARD_TYPES[r.h.type].label, where: e.name, s: hs, sEnd: he > hs + 1 ? he : undefined, ll: this.edgeAt(e, tIn), edgeId: e.id, hazardId: r.h.id, sev: r.h.sev });
       }
       if (i < segs.length - 1 && (sg.t1 === 0 || sg.t1 === 1)) {
         const nid = sg.t1 === 1 ? e.b : e.a, n = this.nodes[nid];
@@ -243,9 +332,12 @@ export class Engine {
     const hazardsNear: { h: Hazard; d: number }[] = [], loc = coords.map((c) => this.P.toLocal(c));
     for (const h of this.hazards) {
       if (seenHz[h.id]) continue;
-      const [px, py] = this.P.toLocal(h.ll!);
+      const g = h.geometry, verts = g.type === 'Point' ? [g.coordinates] : g.type === 'LineString' ? g.coordinates : g.coordinates[0];
       let best = Infinity;
-      for (let k = 0; k < loc.length - 1; k++) best = Math.min(best, segProject(px, py, loc[k][0], loc[k][1], loc[k + 1][0], loc[k + 1][1]).d);
+      for (const v of verts) {
+        const [px, py] = this.P.toLocal(v);
+        for (let k = 0; k < loc.length - 1; k++) best = Math.min(best, segProject(px, py, loc[k][0], loc[k][1], loc[k + 1][0], loc[k + 1][1]).d);
+      }
       if (best <= RULES.hazardBuffer) hazardsNear.push({ h, d: best });
     }
     /* turn-by-turn legs */

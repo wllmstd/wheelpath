@@ -5,7 +5,7 @@
 import { Engine } from './engine';
 import { makeProjection, segProject } from './geo';
 import { HAZARD_TYPES } from './rules';
-import type { GEdge, GNode, Hazard, HazardType, LngLat, Network, Place, PlaceCat, Report, Severity, Surface } from './types';
+import type { GEdge, GNode, Hazard, HazardGeometry, HazardType, LngLat, Network, Place, PlaceCat, Report, Severity, Surface } from './types';
 
 export interface OsmElement {
   type: 'node' | 'way' | 'relation';
@@ -45,7 +45,7 @@ const HW: Record<string, 1> = { trunk: 1, primary: 1, secondary: 1, tertiary: 1,
 const WIDTH: Record<string, [number, number]> = { trunk: [1.6, 2.4], primary: [1.5, 2.3], secondary: [1.4, 2.1], tertiary: [1.2, 1.9], unclassified: [1.0, 1.7], residential: [0.85, 1.6], living_street: [1.0, 1.7], service: [0.8, 1.3], pedestrian: [1.5, 2.4], footway: [1.0, 1.8], path: [0.8, 1.4], track: [0.8, 1.2], primary_link: [1.4, 2.0], secondary_link: [1.3, 1.9], tertiary_link: [1.2, 1.8], trunk_link: [1.4, 2.0] };
 const CATMAP: Record<string, PlaceCat> = { school: 'school', college: 'school', kindergarten: 'school', university: 'school', library: 'gov', pharmacy: 'health', clinic: 'health', hospital: 'health', doctors: 'health', townhall: 'gov', community_centre: 'gov', place_of_worship: 'worship', marketplace: 'market', bank: 'bank', bus_station: 'transport', restaurant: 'food', fast_food: 'food', cafe: 'food', supermarket: 'market', convenience: 'market', bakery: 'food', mall: 'market' };
 
-interface SeedHazard { x: number; y: number; type: HazardType; sev: Severity; title: string; author: string; days: number; ratings: number[]; comments: { who: string; text: string; ago: string }[] }
+interface SeedHazard { x: number; y: number; type: HazardType; sev: Severity; shape?: 'point' | 'line' | 'area'; size?: number; title: string; author: string; days: number; ratings: number[]; comments: { who: string; text: string; ago: string }[] }
 const SEED_HAZARDS: SeedHazard[] = [
   { x: -115, y: -45, type: 'pavement', sev: 2, title: 'Broken pavement near the school gate', author: 'Ana', days: 1, ratings: [1, 1, 2],
     comments: [{ who: 'Mario', text: 'Unsafe sidewalk!', ago: '2 days ago' }, { who: 'Liza', text: 'The sidewalk is too close to the road.', ago: '2 days ago' }, { who: 'Ben', text: 'The ramp is too steep.', ago: '3 days ago' }] },
@@ -53,11 +53,12 @@ const SEED_HAZARDS: SeedHazard[] = [
   { x: -75, y: 25, type: 'obstruction', sev: 3, title: 'Parked tricycles block the walkway', author: 'Nena', days: 5, ratings: [1, 2],
     comments: [{ who: 'Nena', text: 'Only about 0.8 m of space left. A wheelchair cannot pass.', ago: '5 days ago' }, { who: 'Paolo', text: 'Cleared in the morning, back by noon.', ago: '4 days ago' }] },
   { x: 65, y: -115, type: 'narrow', sev: 2, title: 'Pole narrows the sidewalk', author: 'Juan', days: 8, ratings: [2], comments: [] },
-  { x: 205, y: -65, type: 'flood', sev: 1, title: 'Standing water after rain', author: 'Grace', days: 9, ratings: [3, 3], comments: [{ who: 'Grace', text: 'Drains slowly. Fine when dry.', ago: '9 days ago' }] },
+  { x: 205, y: -65, type: 'flood', sev: 1, shape: 'area', size: 14, title: 'Flooded corner after rain', author: 'Grace', days: 9, ratings: [3, 3], comments: [{ who: 'Grace', text: 'Drains slowly. Fine when dry.', ago: '9 days ago' }] },
   { x: -165, y: 70, type: 'ramp', sev: 2, title: 'Curb ramp is too steep', author: 'Eli', days: 12, ratings: [2, 2], comments: [] },
   { x: 265, y: 150, type: 'obstruction', sev: 2, title: 'Vendor cart on the walkway', author: 'Liza', days: 14, ratings: [2, 3], comments: [] },
   { x: -255, y: -145, type: 'pavement', sev: 1, title: 'Cracked slab, still passable', author: 'Paolo', days: 16, ratings: [3, 4], comments: [] },
   { x: 25, y: 270, type: 'drain', sev: 2, title: 'Loose drain cover', author: 'Mario', days: 18, ratings: [2], comments: [] },
+  { x: 160, y: -160, type: 'works', sev: 3, shape: 'line', size: 40, title: 'Sidewalk dug up for drainage works', author: 'Ben', days: 2, ratings: [1], comments: [{ who: 'Ben', text: 'About 40 m of sidewalk is closed. You have to go on the road.', ago: '2 days ago' }] },
 ];
 
 export function buildNetwork(osm: OsmJson, o: BuildOptions): Network {
@@ -144,9 +145,10 @@ export function buildNetwork(osm: OsmJson, o: BuildOptions): Network {
   for (const e of edges) {
     const inCov = Math.hypot(e.mx, e.my) <= COV_R, w = e.way % 1000003, c = e.chunk;
     e.surveyed = inCov;
+    if (inCov) e.source = 'simulated';
     if (e.kind === 'stairs') { if (inCov) { e.width = 1.8; e.slope = 14; e.surface = 'fair'; } }
     else if (inCov) {
-      if (hash(w, c, 7) < 0.045) { e.surveyed = false; e.gap = true; continue; }
+      if (hash(w, c, 7) < 0.045) { e.surveyed = false; e.gap = true; delete e.source; continue; }
       const r = WIDTH[e.hw] || [1.0, 1.6];
       let wd = r[0] + (r[1] - r[0]) * hash(w, c, 1);
       if (hash(w, c, 2) < 0.09) wd -= 0.32;
@@ -173,10 +175,10 @@ export function buildNetwork(osm: OsmJson, o: BuildOptions): Network {
   if (edges.filter((e) => e.surveyed && e.kind === 'sidewalk').length < 3) throw new Error('The street data had too few streets near the focus point');
 
   /* 5. SIMULATED hazards and reports, snapped to real streets */
-  const nearestEdge = (x: number, y: number, usedE: Record<string, 1>, clean = false) => {
+  const nearestEdge = (x: number, y: number, usedE: Record<string, 1>, clean = false, minLen = 10) => {
     let bestE: GEdge | null = null, bd = 1e9, bt = 0.5;
     for (const e of edges) {
-      if (e.kind !== 'sidewalk' || !e.surveyed || e.len < 10 || usedE[e.id]) continue;
+      if (e.kind !== 'sidewalk' || !e.surveyed || e.len < minLen || usedE[e.id]) continue;
       if (clean && !((e.width ?? 0) >= 1.2 && Math.abs(e.slope ?? 99) <= 5 && e.surface !== 'broken' && e.surface !== 'rough')) continue;
       const a = nodes[e.a], b = nodes[e.b], r = segProject(x, y, a.x, a.y, b.x, b.y);
       if (r.d < bd) { bd = r.d; bestE = e; bt = r.t; }
@@ -185,16 +187,28 @@ export function buildNetwork(osm: OsmJson, o: BuildOptions): Network {
   };
   const hazards: Hazard[] = [], reports: Report[] = [], usedE: Record<string, 1> = {};
   for (const s of SEED_HAZARDS) {
-    const n = nearestEdge(s.x, s.y, usedE); if (!n || n.d > 140) continue;
+    const n = nearestEdge(s.x, s.y, usedE, false, s.shape === 'line' ? Math.max(30, (s.size || 30) + 6) : 10); if (!n || n.d > 140) continue;
     usedE[n.e.id] = 1;
-    const h: Hazard = { id: 'h' + (hazards.length + 1), edgeId: n.e.id, t: n.t, type: s.type, sev: s.sev, seed: true };
+    /* the hazard's fixed geographic geometry, placed on the real street it is reported on */
+    const a = nodes[n.e.a], b = nodes[n.e.b], at = (t: number): LngLat => P.fromLocal(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    let geometry: HazardGeometry;
+    if (s.shape === 'line') {
+      const half = Math.min(0.45, (s.size || 30) / 2 / n.e.len), c = Math.max(half, Math.min(1 - half, n.t));
+      geometry = { type: 'LineString', coordinates: [at(c - half), at(c), at(c + half)] };
+    } else if (s.shape === 'area') {
+      const c = P.toLocal(at(n.t)), r = s.size || 12, ring: LngLat[] = [];
+      for (let k = 0; k <= 20; k++) { const ang = (k / 20) * Math.PI * 2; ring.push(P.fromLocal(c[0] + Math.cos(ang) * r * (1 + 0.18 * Math.sin(3 * ang)), c[1] + Math.sin(ang) * r * 0.8)); }
+      ring[ring.length - 1] = ring[0];
+      geometry = { type: 'Polygon', coordinates: [ring] };
+    } else geometry = { type: 'Point', coordinates: at(n.t) };
+    const h: Hazard = { id: 'h' + (hazards.length + 1), type: s.type, sev: s.sev, source: 'simulated', geometry };
     hazards.push(h);
     reports.push({ id: 'r' + hazards.length, hazardId: h.id, title: s.title, author: s.author, daysAgo: s.days, ratings: s.ratings.slice(), contact: HAZARD_TYPES[s.type].agency, comments: s.comments.map((c) => ({ ...c })), simulated: true });
   }
 
   /* 6. places: the focus point first, then real named places from OpenStreetMap */
-  const places: Place[] = [{ id: 'p1', name: o.name, cat: 'school', ll: [o.lng, o.lat], hours: 'Hours not recorded in this prototype', note: o.street + '. The simulated hazards and reports are placed on the streets around it.' }];
-  const cand: (Omit<Place, 'id' | 'note'> & { d: number })[] = [];
+  const places: Place[] = [{ id: 'p1', name: o.name, cat: 'school', ll: [o.lng, o.lat], info: { kind: 'school', address: o.street + ', Valenzuela City', position: 'Coordinates given for this project (14.69198 N, 120.96665 E)' } }];
+  const cand: (Omit<Place, 'id'> & { d: number })[] = [];
   for (const e of pois) {
     const t = e.tags!, lat = e.lat ?? e.center?.lat, lon = e.lon ?? e.center?.lon;
     if (lat == null || lon == null) continue;
@@ -202,14 +216,18 @@ export function buildNetwork(osm: OsmJson, o: BuildOptions): Network {
     const cat = CATMAP[kindKey]; if (!cat) continue;
     const xy = P.toLocal([lon, lat]), d = Math.hypot(xy[0], xy[1]);
     if (d < 70 && /math|science|school/i.test(t.name)) continue;
-    cand.push({ name: t.name, cat, ll: [lon, lat], d, hours: t.opening_hours ? 'Hours on OpenStreetMap: ' + t.opening_hours : 'Hours not recorded in this prototype' });
+    const addr = [t['addr:housenumber'], t['addr:street']].filter(Boolean).join(' ') || t['addr:full'] || undefined;
+    cand.push({ name: t.name, cat, ll: [lon, lat], d, info: {
+      osm: e.type + '/' + e.id, kind: kindKey, address: addr, hours: t.opening_hours, phone: t.phone || t['contact:phone'], website: t.website || t['contact:website'], wheelchair: t.wheelchair,
+      position: e.type === 'node' ? 'OpenStreetMap point' : 'Centre of the OpenStreetMap ' + (e.type === 'way' ? 'outline' : 'relation'),
+    } });
   }
   cand.sort((a, b) => a.d - b.d);
   const seen: Record<string, 1> = {};
   for (const c of cand) {
     if (places.length >= 40 || seen[c.name.toLowerCase()]) continue;
     seen[c.name.toLowerCase()] = 1;
-    places.push({ id: 'p' + (places.length + 1), name: c.name, cat: c.cat, ll: c.ll, hours: c.hours, note: 'Name and position from OpenStreetMap.' });
+    places.push({ id: 'p' + (places.length + 1), name: c.name, cat: c.cat, ll: c.ll, info: c.info });
   }
 
   /* 7. demo starting point ~300 m from the focus, kept off hazards and barrier edges */
@@ -246,6 +264,6 @@ export function buildNetwork(osm: OsmJson, o: BuildOptions): Network {
     if (!blocking.length) break;
     for (const b of blocking) { const h = hazards.find((x) => x.id === b.hazardId); if (h && h.sev === 3) h.sev = 2; }
   }
-  for (const h of hazards) delete h.ll;
+  for (const h of hazards) { delete h.spans; delete h.anchor; }
   return net;
 }

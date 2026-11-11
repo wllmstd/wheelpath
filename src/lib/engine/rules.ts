@@ -11,6 +11,10 @@ export const RULES = {
   critGrade: 10,
   walkSpeed: 1.2, // m/s
   hazardBuffer: 25, // m
+  /** a point hazard is attached to the nearest pathway within this distance (m) */
+  attachPoint: 20,
+  /** a line hazard affects pathway stretches within this distance of the line (m) */
+  attachLine: 6,
   stars: {
     width: [['≥ 1.50 m', 5], ['1.20 – 1.49 m', 4], ['1.00 – 1.19 m', 3], ['0.90 – 0.99 m', 2], ['< 0.90 m', 1]],
     grade: [['≤ 2 %', 5], ['2 – 5 % (up to 1:20)', 4], ['5 – 8.33 % (up to 1:12)', 3], ['8.33 – 10 %', 2], ['> 10 %', 1]],
@@ -34,6 +38,7 @@ export const HAZARD_TYPES: Record<HazardType, { label: string; sev: Severity; ag
   drain: { label: 'Open drain', sev: 3, agency: 'City Engineering Office (sample)', desc: 'Missing cover or gap in the walkway.' },
   narrow: { label: 'Walkway too narrow', sev: 2, agency: 'PDAO (sample)', desc: 'Poles or walls leave less room than a wheelchair needs.' },
   flood: { label: 'Standing water', sev: 1, agency: 'Barangay Hall (sample)', desc: 'Puddles or flooding after rain.' },
+  works: { label: 'Construction or excavation', sev: 3, agency: 'City Engineering Office (sample)', desc: 'The walkway is dug up or closed for works.' },
   other: { label: 'Something else', sev: 1, agency: 'Barangay Hall (sample)', desc: 'Another problem on the pathway.' },
 };
 export const SEV: Record<Severity, { label: string; short: string }> = {
@@ -48,6 +53,8 @@ export const CATS: Record<PlaceCat, { label: string; color: string }> = {
   food: { label: 'Food', color: '#B77B00' }, bank: { label: 'Bank', color: '#2C344C' },
 };
 export const CLS_LABEL = { accessible: 'Accessible', partial: 'Partially accessible', not: 'Not accessible', limited: 'Limited data' } as const;
+
+export const SOURCE_LABEL = { survey: 'Surveyed', user: 'User report', simulated: 'Simulated' } as const;
 
 export const fmt = {
   dist(m: number) { if (m < 100) return Math.max(5, Math.round(m / 5) * 5) + ' m'; if (m < 1000) return Math.round(m / 10) * 10 + ' m'; return (m / 1000).toFixed(1) + ' km'; },
