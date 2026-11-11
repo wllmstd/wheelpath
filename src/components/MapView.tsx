@@ -144,7 +144,7 @@ export default function MapView(p: Props) {
         m.addLayer({ id: 'wp-curbs', type: 'circle', source: 'wp-curbs', minzoom: 15.5, paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 15.5, 3, 18, 6], 'circle-color': ['match', ['get', 'curb'], 'ok', COL.good, 'steep', COL.poor, 'missing', COL.bad, COL.unknown], 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
         m.addLayer({ id: 'wp-acc', type: 'fill', source: 'wp-acc', paint: { 'fill-color': COL.gps, 'fill-opacity': 0.12, 'fill-outline-color': COL.gps } });
         m.addLayer({ id: 'wp-snap', type: 'circle', source: 'wp-snap', paint: { 'circle-radius': 5, 'circle-color': COL.teal, 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
-        m.addLayer({ id: 'wp-places', type: 'symbol', source: 'wp-places', layout: { 'icon-image': ['concat', 'pl-', ['get', 'cat'], ['case', ['get', 'on'], '-on', '']], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'symbol-sort-key': ['case', ['get', 'on'], 2, 1] } });
+        m.addLayer({ id: 'wp-places', type: 'symbol', source: 'wp-places', layout: { 'icon-image': ['concat', 'pl-', ['get', 'cat'], ['case', ['get', 'on'], '-on', '']], 'icon-size': ['interpolate', ['linear'], ['zoom'], 14, 0.5, 16.5, 0.7, 18, 1], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'symbol-sort-key': ['case', ['get', 'on'], 2, 1] } });
         m.addLayer({ id: 'wp-hz-pins', type: 'symbol', source: 'wp-hazard-pins', layout: { 'icon-image': ['concat', 'hz-', ['to-string', ['get', 'sev']], ['case', ['get', 'on'], '-on', '']], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'symbol-sort-key': ['case', ['get', 'on'], 2, 1] } });
         ready.current = true;
         syncAll();

@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { AREA } from '@/lib/config';
 import { Engine } from '@/lib/engine/engine';
 import { haversine } from '@/lib/engine/geo';
-import { CATS, CLS_LABEL, CURB_LABEL, HAZARD_TYPES, RULES, SEV, SOURCE_LABEL, SURF_LABEL, fmt } from '@/lib/engine/rules';
+import { CATS, CLS_LABEL, CURB_LABEL, HAZARD_TYPES, RULES, SEV, SURF_LABEL, fmt } from '@/lib/engine/rules';
 import type { Hazard, HazardType, LngLat, Network, Place, Plan, Prefs, Report, Severity } from '@/lib/engine/types';
 import { useGeolocation } from '@/hooks/useGeolocation';
 import type { Feature, Layers, MapHandle } from './MapView';
@@ -18,8 +18,8 @@ type Mode = 'demo' | 'gps';
 interface NavRun { kind: Mode; t: number; s: number; playing: boolean; speed: number; off: LngLat | null; offCount: number; reroutes: number }
 
 const DEFAULT_PREFS: Prefs = { stairs: true, steep: true, ramps: true, shortest: false };
-const DEFAULT_LAYERS: Layers = { access: true, hazards: true, curbs: true, places: true, coverage: false, buffers: false };
-const LS = 'wheelpath:v2';
+const DEFAULT_LAYERS: Layers = { access: true, hazards: true, curbs: false, places: true, coverage: false, buffers: false };
+const LS = 'wheelpath:v3';
 const OFF_ROUTE_M = 30, SNAP_SHOW_M = 60;
 function load<T extends object>(k: string, d: T): T { try { const v = localStorage.getItem(LS + ':' + k); return v ? { ...d, ...JSON.parse(v) } : d; } catch { return d; } }
 function loadArr<T>(k: string): T[] { try { const v = localStorage.getItem(LS + ':' + k); return v ? JSON.parse(v) : []; } catch { return []; } }
@@ -65,7 +65,6 @@ function App({ net }: { net: Network }) {
   const [sel, setSel] = useState(0);
   const [warnStart, setWarnStart] = useState(false);
   const [nav, setNav] = useState<NavRun | null>(null);
-  const [layersOpen, setLayersOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [rfilter, setRfilter] = useState<'all' | 'near' | 'crit'>('all');
@@ -113,13 +112,13 @@ function App({ net }: { net: Network }) {
     const sn = engine.snap(gpsLL); return sn.dist <= SNAP_SHOW_M ? sn : null;
   }, [mode, gpsInArea, gpsLL, engine]);
   const acc = geo.fix?.accuracy ?? null, accTone = acc == null ? '' : acc <= 15 ? 'good' : acc <= 40 ? 'fair' : 'poor';
-  const locNote = mode === 'demo' ? 'Demo position. Drag the dark dot to move it.'
+  const locNote = mode === 'demo' ? 'Using a sample location near the school.'
     : geo.status === 'requesting' ? 'Asking for your location… Allow it when your browser asks.'
-    : geo.status === 'denied' ? 'Location permission was denied. Allow location for this site in your browser settings, or use the demo position.'
-    : geo.status === 'unsupported' || (geo.status === 'unavailable' && !gpsLL) ? (geo.error || 'Location is unavailable.') + ' You can use the demo position instead.'
-    : geo.stale ? 'Your last location is more than 30 seconds old. Waiting for a new fix…'
-    : gpsLL && !gpsInArea ? `You are ${fmt.dist(gpsDist!)} from the area with accessibility data, so routes can’t be rated here.`
-    : gpsLL ? `Live location, accurate to about ${Math.round(acc!)} m${snapped ? `. Matched to ${engine.byId[snapped.edgeId].name}, ${Math.round(snapped.dist)} m away` : ''}.` : 'Waiting for your location…';
+    : geo.status === 'denied' ? 'Location is blocked. Allow it in your browser settings, or use the sample location.'
+    : geo.status === 'unsupported' || (geo.status === 'unavailable' && !gpsLL) ? (geo.error || 'Location is unavailable.') + ' You can use the sample location instead.'
+    : geo.stale ? 'Waiting for a new location…'
+    : gpsLL && !gpsInArea ? `You are ${fmt.dist(gpsDist!)} away from the mapped area. Use the sample location to try routes.`
+    : gpsLL ? `Using your location (±${Math.round(acc!)} m)${snapped ? ` on ${engine.byId[snapped.edgeId].name}` : ''}` : 'Finding your location…';
 
   const startGps = () => { setMode('gps'); setFollowing(true); setNeedOrigin(false); if (geo.status === 'denied' || geo.status === 'unavailable') geo.retry(); };
   const useDemo = () => { setMode('demo'); setNeedOrigin(false); mapH.current?.flyTo(demoYou, 17); };
@@ -265,58 +264,67 @@ function App({ net }: { net: Network }) {
     if (f?.type === 'place') { const pl = net.places.find((x) => x.id === f.id); if (pl) mapH.current?.flyTo(pl.ll); }
     if (f?.type === 'hazard') { const h = hazardById(f.id); if (h) mapH.current?.flyTo(hzAnchor(h)); }
   }
-  const go = (s: Screen) => { setLayersOpen(false); setScreen(s); };
+  const go = (s: Screen) => setScreen(s);
   const openReport = (ll: LngLat | null) => { setForm((f) => ({ ...f, ll })); setSelected(null); go('report'); };
 
-  /* ================= render pieces ================= */
+  /* ================= render pieces (kept deliberately simple) ================= */
+  const [more, setMore] = useState(false);
+  const [showAlts, setShowAlts] = useState(false);
+  const [demoOpen, setDemoOpen] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
+  useEffect(() => { setMore(false); }, [selected]);
+  useEffect(() => { setShowAlts(false); }, [plan]);
+
   const closeBtn = <button className="icon-btn" aria-label="Close" onClick={() => setSelected(null)}><Icon name="close" /></button>;
   const originChoice = (
-    <div className="notice"><p className="small"><b>Where are you starting from?</b> {mode === 'gps' ? locNote : 'Choose a starting position.'}</p>
-      <div className="row gap wrap"><button className="btn sm" onClick={startGps}><Icon name="locate" size={16} /> Use my live location</button><button className="btn line sm" onClick={useDemo}>Use the demo position</button></div></div>
+    <div className="notice"><p><b>Where are you starting from?</b></p>{mode === 'gps' && <p className="small">{locNote}</p>}
+      <div className="stack"><button className="btn" onClick={startGps}><Icon name="locate" size={18} /> Use my location</button><button className="btn line" onClick={useDemo}>Use the sample location</button></div></div>
   );
+  const CLS_ICON = { accessible: 'check', partial: 'alert', not: 'close', limited: 'info' } as const;
+  const VERDICT = {
+    accessible: ['Accessible route', 'Based on the recorded data, this route meets the accessibility criteria.'],
+    partial: ['Partially accessible', 'Some parts are difficult or have no data.'],
+    not: ['Not accessible', 'This route has a barrier that may block a wheelchair.'],
+    limited: ['Not enough data', 'Most of this route has no accessibility data.'],
+  } as const;
 
   function placeCard(pl: Place) {
     const cov = engine.inCoverage(pl.ll), i = pl.info;
-    const rows: [string, ReactNode][] = [];
-    if (i.address) rows.push(['Address', i.address]);
-    if (i.hours) rows.push(['Opening hours', i.hours]);
-    if (i.phone) rows.push(['Phone', i.phone]);
-    if (i.website) rows.push(['Website', <a key="w" href={i.website} target="_blank" rel="noopener noreferrer">{i.website.replace(/^https?:\/\//, '').slice(0, 40)}</a>]);
-    if (i.wheelchair) rows.push(['Wheelchair (OSM tag)', i.wheelchair + ' · not checked by WheelPath']);
     return (
       <div className="card" role="dialog" aria-label={pl.name}>
-        <div className="row"><div className="grow"><h2>{pl.name}</h2><p className="meta"><span className="dot" style={{ background: CATS[pl.cat].color }} />{CATS[pl.cat].label}{i.kind && i.kind !== pl.cat ? ` · ${i.kind.replace(/_/g, ' ')}` : ''}{distFrom(pl.ll) && ' · ' + distFrom(pl.ll)}</p></div>{closeBtn}</div>
-        <div>{cov ? <Tag kind="info">In the area with accessibility data</Tag> : <Tag kind="limited">Outside the area with data</Tag>}</div>
-        {rows.length > 0 && <dl className="kv">{rows.map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd>{v}</dd></Fragment>)}</dl>}
-        <p className="small">{rows.length ? '' : 'OpenStreetMap has no opening hours, address or contact details for this place. '}{i.position}: {ll5(pl.ll)}.</p>
-        {needOrigin ? originChoice : <button className="btn" onClick={() => setDestination(pl)}><Icon name="flag" size={18} /> Set as destination</button>}
+        <div className="row"><div className="grow"><h2>{pl.name}</h2><p className="meta">{CATS[pl.cat].label}{distFrom(pl.ll) && ' · ' + distFrom(pl.ll)}</p></div>{closeBtn}</div>
+        {!cov && <p className="small">This place is outside the mapped area, so the route can’t be fully rated.</p>}
+        {needOrigin ? originChoice : <button className="btn big" onClick={() => setDestination(pl)}><Icon name="flag" size={20} /> Go here</button>}
+        {(i.address || i.hours || i.phone || i.website || i.wheelchair) && <button className="linkbtn" onClick={() => setMore((m) => !m)} aria-expanded={more}>{more ? 'Less info' : 'More info'}</button>}
+        {more && <dl className="kv">
+          {i.address && <><dt>Address</dt><dd>{i.address}</dd></>}
+          {i.hours && <><dt>Hours</dt><dd>{i.hours}</dd></>}
+          {i.phone && <><dt>Phone</dt><dd>{i.phone}</dd></>}
+          {i.website && <><dt>Website</dt><dd><a href={i.website} target="_blank" rel="noopener noreferrer">{i.website.replace(/^https?:\/\//, '').slice(0, 36)}</a></dd></>}
+          {i.wheelchair && <><dt>Wheelchair</dt><dd>OpenStreetMap says “{i.wheelchair}” (not checked)</dd></>}
+        </dl>}
       </div>
     );
   }
 
   function hazardCard(h: Hazard) {
-    const r = reportFor(h.id), ty = HAZARD_TYPES[h.type], g = h.geometry, spans = h.spans || [];
-    const streets = [...new Set(spans.map((sp) => engine.byId[sp.edgeId]?.name).filter(Boolean))];
-    const shape = g.type === 'Point' ? 'Point hazard' : g.type === 'LineString' ? `Blocked stretch, about ${Math.round(engine.measure(g))} m long` : `Affected area, about ${Math.round(engine.measure(g))} m²`;
-    const avg = r && r.ratings.length ? r.ratings.reduce((a, b) => a + b, 0) / r.ratings.length : null;
+    const r = reportFor(h.id), ty = HAZARD_TYPES[h.type], spans = h.spans || [];
+    const street = spans[0] ? engine.byId[spans[0].edgeId]?.name : null;
+    const g = h.geometry, size = g.type === 'LineString' ? `About ${Math.round(engine.measure(g))} m of path` : g.type === 'Polygon' ? `An area of about ${Math.round(engine.measure(g))} m²` : null;
     return (
-      <div className="card" role="dialog" aria-label="Hazard report">
-        <div className="row"><div className="grow"><h2>{r?.title || ty.label}</h2><p className="meta">{ty.label}{distFrom(hzAnchor(h)) && ' · ' + distFrom(hzAnchor(h))}</p></div>{closeBtn}</div>
-        <div className="row gap wrap"><SevTag sev={h.sev} /><Tag kind={h.source === 'user' ? 'info' : 'limited'}>{h.source === 'user' ? 'Your report' : SOURCE_LABEL[h.source] + ' report'}</Tag></div>
-        <p className="small">{ty.desc}{r?.note ? ` “${r.note}”` : ''}</p>
-        <dl className="kv">
-          <dt>Geometry</dt><dd>{shape}</dd>
-          <dt>Location</dt><dd className="mono">{ll5(hzAnchor(h))}</dd>
-          <dt>Affects</dt><dd>{streets.length ? `${streets.join(', ')} (${spans.length} pathway stretch${spans.length > 1 ? 'es' : ''})` : 'No mapped pathway, so routes are not affected'}</dd>
-        </dl>
-        {r && <p className="small">Reported by {r.author} · {r.daysAgo === 0 ? 'today' : r.daysAgo + (r.daysAgo === 1 ? ' day ago' : ' days ago')}{avg != null && <> · rated {fmt.n1(avg)} <Stars value={avg} size={12} /></>} · Goes to {r.contact}</p>}
-        {r && r.comments.length > 0 && <ul className="comments">{r.comments.map((c, i) => <li key={i}><b>{c.who}</b> {c.text} <span className="small">{c.ago}</span></li>)}</ul>}
-        {r && (
-          <form className="row gap" onSubmit={(ev) => { ev.preventDefault(); const t = comment.trim(); if (!t) return; setReports((l) => l.map((x) => (x.id === r.id ? { ...x, comments: [...x.comments, { who: 'You', text: t, ago: 'just now' }] } : x))); setComment(''); }}>
+      <div className="card" role="dialog" aria-label="Reported problem">
+        <div className="row"><div className="grow"><h2>{r?.title || ty.label}</h2><p className="meta">{street || 'Not on a mapped path'}{distFrom(hzAnchor(h)) && ' · ' + distFrom(hzAnchor(h))}</p></div>{closeBtn}</div>
+        <div className="row gap wrap"><SevTag sev={h.sev} />{h.source === 'user' ? <Tag kind="info">Your report</Tag> : <span className="small">Sample report</span>}</div>
+        <p className="small">{ty.desc}{size ? ` ${size}.` : ''}{r?.note ? ` “${r.note}”` : ''}</p>
+        <button className="linkbtn" onClick={() => setMore((m) => !m)} aria-expanded={more}>{more ? 'Hide details' : `Details${r && r.comments.length ? ` and ${r.comments.length} comment${r.comments.length > 1 ? 's' : ''}` : ''}`}</button>
+        {more && <>
+          {r && <p className="small">Reported by {r.author} {r.daysAgo === 0 ? 'today' : r.daysAgo + (r.daysAgo === 1 ? ' day ago' : ' days ago')}. Sent to {r.contact}.</p>}
+          <p className="small mono">{ll5(hzAnchor(h))}</p>
+          {r && r.comments.length > 0 && <ul className="comments">{r.comments.map((c, i) => <li key={i}><b>{c.who}</b> {c.text}</li>)}</ul>}
+          {r && <form className="row gap" onSubmit={(ev) => { ev.preventDefault(); const t = comment.trim(); if (!t) return; setReports((l) => l.map((x) => (x.id === r.id ? { ...x, comments: [...x.comments, { who: 'You', text: t, ago: 'just now' }] } : x))); setComment(''); }}>
             <input className="input grow" value={comment} onChange={(e2) => setComment(e2.target.value)} placeholder="Add a comment" aria-label="Add a comment" />
-            <button className="btn sm" type="submit">Post</button>
-          </form>
-        )}
+            <button className="btn sm" type="submit">Post</button></form>}
+        </>}
       </div>
     );
   }
@@ -329,218 +337,193 @@ function App({ net }: { net: Network }) {
       const e = engine.byId[selected.id]; if (!e) return null;
       const ev = engine.evalEdge(e);
       return (
-        <div className="card" role="dialog" aria-label="Pathway details">
-          <div className="row"><div className="grow"><h2>{e.name}</h2><p className="meta">{e.kind === 'stairs' ? 'Steps' : e.kind === 'path' ? 'Footpath' : 'Street pathway'} · {fmt.dist(e.len)} long · OpenStreetMap way {e.way}</p></div>{closeBtn}</div>
-          {!ev.known ? <p className="small"><Tag kind="limited">No accessibility data</Tag> {e.gap ? 'This stretch is inside the data area but has no values.' : 'This stretch is outside the data area.'} It can’t be rated, so it is never counted as accessible.</p> : (<>
-            <dl className="kv">
-              <dt>Average rating</dt><dd>{fmt.n1(ev.avg)} <Stars value={ev.avg} size={14} /></dd>
-              <dt>Clear width</dt><dd>{e.width!.toFixed(2)} m <span className="small">(min. 1.20 m)</span></dd>
-              <dt>Slope</dt><dd>{Math.abs(e.slope!).toFixed(1)} %</dd>
-              <dt>Surface</dt><dd>{SURF_LABEL[e.surface!]}</dd>
-              <dt>Hazard reports</dt><dd>{ev.hz.length || 'None'}</dd>
-              <dt>Data source</dt><dd>{SOURCE_LABEL[e.source || 'simulated']}</dd>
-            </dl>
-            {e.source !== 'survey' && <p className="small">Simulated values for the prototype, not a field survey.</p>}</>)}
-          <div className="row gap">
-            {mode === 'demo' && <button className="btn line sm grow" onClick={() => { setDemoYou(engine.snap(engine.edgeAt(e, 0.5)).ll); setSelected(null); }}>Move me here</button>}
-            <button className="btn report sm grow" onClick={() => openReport(engine.edgeAt(e, 0.5))}>Report a problem</button>
-          </div>
+        <div className="card" role="dialog" aria-label="Path details">
+          <div className="row"><div className="grow"><h2>{e.name}</h2><p className="meta">{ev.known ? <><Stars value={ev.avg} size={14} /> {fmt.n1(ev.avg)}</> : 'No accessibility data'}</p></div>{closeBtn}</div>
+          {ev.known ? <p className="small">Width {e.width!.toFixed(2)} m · Slope {Math.abs(e.slope!).toFixed(1)} % · {SURF_LABEL[e.surface!]} surface{ev.hz.length ? ` · ${ev.hz.length} reported problem${ev.hz.length > 1 ? 's' : ''}` : ''}. Sample values.</p>
+            : <p className="small">This part has no data, so it is never counted as accessible.</p>}
+          <button className="btn line" onClick={() => openReport(engine.edgeAt(e, 0.5))}>Report a problem here</button>
         </div>
       );
     }
     const n = engine.nodes[selected.id]; if (!n || !n.curb) return null;
-    return (
-      <div className="card" role="dialog" aria-label="Crossing">
-        <div className="row"><div className="grow"><h2>Crossing</h2><p className="meta">{CURB_LABEL[n.curb]}</p></div>{closeBtn}</div>
-        <p className="small">{n.curb === 'missing' ? 'A missing curb ramp is a critical barrier: paths through here are rated not accessible.' : n.curb === 'steep' ? 'Steeper than 1:12. Paths through here get a lower ramp rating.' : n.curb === 'unknown' ? 'Not surveyed, so it is never counted as accessible.' : 'A curb ramp is recorded here.'} Simulated value.</p>
-      </div>
-    );
+    return (<div className="card" role="dialog" aria-label="Crossing"><div className="row"><div className="grow"><h2>Crossing</h2><p className="meta">{CURB_LABEL[n.curb]}</p></div>{closeBtn}</div></div>);
   }
 
   function tabbar() {
-    const t = (s: Screen, icon: string, label: string) => <button className={'tab' + (screen === s ? ' on' : '')} onClick={() => { setSelected(null); go(s); }} aria-current={screen === s ? 'page' : undefined}><Icon name={icon} /><span>{label}</span></button>;
-    return <nav className="tabbar" aria-label="Main">{t('home', 'map', 'Map')}{t('reports', 'alert', 'Reports')}{t('prefs', 'sliders', 'Preferences')}</nav>;
+    const t = (s: Screen, icon: string, label: string) => <button className={'tab' + (screen === s ? ' on' : '')} onClick={() => { setSelected(null); go(s); }} aria-current={screen === s ? 'page' : undefined}><Icon name={icon} size={24} /><span>{label}</span></button>;
+    return <nav className="tabbar" aria-label="Main">{t('home', 'map', 'Map')}{t('reports', 'alert', 'Problems')}{t('prefs', 'sliders', 'Settings')}</nav>;
   }
 
-  function routeSheet(): ReactNode {
+  /** the one route card: verdict, time, start */
+  function routeCard(): ReactNode {
     if (!plan || !R || !dest) return null;
-    const verdict = R.cls === 'accessible' ? { h: 'Accessible path found', p: 'Based on the recorded data, this path meets the accessibility criteria. Conditions can change, so check on site.' }
-      : R.cls === 'partial' ? { h: 'Partially accessible path', p: R.unknownLen > 0 ? 'Some stretches have no data, so this path can’t be fully rated.' : 'This path has some cautions. Review them before you go.' }
-      : R.cls === 'limited' ? { h: 'Not enough data to rate this path', p: 'More than half of it has no accessibility data.' }
-      : { h: 'No fully accessible path found', p: 'This path has a critical barrier. As recorded, it is not suitable for wheelchair use.' };
-    const crit = R.barriers.filter((b) => b.kind === 'critical'), caution = R.barriers.filter((b) => b.kind === 'caution');
-    const opts = plan.routes.length > 1 && <div className="opts" role="radiogroup" aria-label="Paths">{plan.routes.map((r, i) => (
-      <button key={r.id} role="radio" aria-checked={i === sel} className={'opt' + (i === sel ? ' on' : '')} onClick={() => { setSel(i); setWarnStart(false); }}>
-        <b>{r.label}</b><span>{fmt.mins(r.time)} · {fmt.dist(r.length)}</span><span>{CLS_LABEL[r.cls]}{r.ratings ? ` · ${fmt.n1(r.ratings.avg)}★` : ''}{r.criticalCount ? ` · ${r.criticalCount} critical` : ''}</span>
-      </button>))}</div>;
-    if (!routeDetails) return (
-      <div className="sheet">
-        <div className={'verdict v-' + R.cls}><h2>{verdict.h}</h2><p>{verdict.p}</p><div className="row gap wrap"><ClsTag cls={R.cls} /><b>{fmt.mins(R.time)} · {fmt.dist(R.length)}</b>{R.ratings && <span className="row gap"><Stars value={R.ratings.avg} size={14} /> {fmt.n1(R.ratings.avg)}</span>}</div></div>
-        {opts}
-        <button className="btn line sm" onClick={() => setRouteDetails(true)}>Ratings and barriers{crit.length + caution.length ? ` (${crit.length + caution.length})` : ''}</button>
-      </div>
-    );
+    const [title, sub] = VERDICT[R.cls], issues = R.barriers.filter((b) => b.kind !== 'unverified');
     return (
-      <div className="details">
-        <div className={'verdict v-' + R.cls}><h2>{verdict.h}</h2><p>{verdict.p}</p><div className="row gap wrap"><ClsTag cls={R.cls} /><b>{fmt.mins(R.time)} · {fmt.dist(R.length)}</b></div></div>
-        {opts}
-        <h3>{R.label}</h3>
-        {R.ratings && (
-          <div className="ratings">
-            <div className="row"><div className="grow"><small>Average rating</small><div className="big">{fmt.n1(R.ratings.avg)}<span> / 5</span></div></div><Stars value={R.ratings.avg} size={22} /></div>
-            {([['Hazards', R.ratings.hazards], ['Ramp inclination', R.ratings.ramp], ['Sidewalk width', R.ratings.width], ['Surface condition', R.ratings.surface]] as const).map(([k, v]) => (
-              <div key={k} className="rat"><div className="row"><span className="grow">{k}</span><b>{fmt.n1(v)}/5</b> <Stars value={v} size={13} /></div><div className="bar"><i style={{ width: (v / 5) * 100 + '%' }} /></div></div>))}
-            <p className="small">{Math.round((R.knownLen / Math.max(1, R.length)) * 100)}% of this path has data, all of it simulated for this prototype.</p>
-          </div>
-        )}
-        {(crit.length > 0 || caution.length > 0) && <div className="barriers"><h3>Along this path</h3><ul>{[...crit, ...caution].slice(0, 10).map((b, i) => (
-          <li key={i} className={'b-' + b.kind}><button onClick={() => { setRouteDetails(false); if (b.hazardId) setSelected({ type: 'hazard', id: b.hazardId }); setTimeout(() => mapH.current?.flyTo(b.ll, 18), 80); }}><b>{b.label}</b><span>{b.where} · {fmt.dist(b.s)} along{b.sEnd ? `, for about ${Math.round(b.sEnd - b.s)} m` : ''}</span></button></li>))}</ul></div>}
-        {R.hazardsNear.length > 0 && <p className="small">{R.hazardsNear.length} more hazard report{R.hazardsNear.length > 1 ? 's' : ''} within {RULES.hazardBuffer} m of this path.</p>}
-        <p className="small">Ratings can’t guarantee safety. Please check conditions on site.</p>
+      <div className="sheet">
+        <div className={'verdict v-' + R.cls}>
+          <span className={'v-ic c-' + R.cls}><Icon name={CLS_ICON[R.cls]} size={22} /></span>
+          <div className="grow"><h2>{title}</h2><p className="v-meta"><b>{fmt.mins(R.time)}</b> · {fmt.dist(R.length)}{R.ratings && <> · <Stars value={R.ratings.avg} size={14} /></>}</p><p className="small">{sub}</p></div>
+        </div>
+        {!origin ? originChoice : warnStart
+          ? <div className="warn-box"><p><b>This route may not be passable in a wheelchair.</b></p><div className="row gap"><button className="btn line grow" onClick={() => setWarnStart(false)}>Go back</button><button className="btn grow" onClick={() => startNav(true)}>Start anyway</button></div></div>
+          : <button className="btn big" onClick={() => startNav()}>Start</button>}
+        <div className="links">
+          <button className="linkbtn" onClick={() => setRouteDetails(true)}>What’s on the way{issues.length ? ` (${issues.length})` : ''}</button>
+          {plan.routes.length > 1 && <button className="linkbtn" onClick={() => setShowAlts((v) => !v)} aria-expanded={showAlts}>{showAlts ? 'Hide other routes' : `Other routes (${plan.routes.length - 1})`}</button>}
+        </div>
+        {showAlts && <div className="alts" role="radiogroup" aria-label="Routes">{plan.routes.map((r, i) => (
+          <button key={r.id} role="radio" aria-checked={i === sel} className={'alt' + (i === sel ? ' on' : '')} onClick={() => { setSel(i); setWarnStart(false); }}>
+            <span className={'dot c-' + r.cls} /><span className="grow"><b>{CLS_LABEL[r.cls]}</b><small>{fmt.mins(r.time)} · {fmt.dist(r.length)}{r.tag === 'shortest' && i > 0 ? ' · shortest' : ''}</small></span>{i === sel && <Icon name="check" size={18} />}
+          </button>))}</div>}
       </div>
     );
   }
-  function startActions() {
+
+  /** "What's on the way": plain list, then the four ratings */
+  function routeDetailsPage(): ReactNode {
     if (!R) return null;
-    return (<div className="actions">
-      {!origin ? originChoice : warnStart ? <><div className="warn"><Icon name="alert" /> <span><b>This path has {R.criticalCount} critical barrier{R.criticalCount > 1 ? 's' : ''}.</b> It may not be passable in a wheelchair. Start anyway?</span></div>
-        <div className="row gap"><button className="btn line grow" onClick={() => setWarnStart(false)}>Go back</button><button className="btn grow" onClick={() => startNav(true)}>Start anyway</button></div></>
-        : <button className="btn" onClick={() => startNav()}>Start navigation{mode === 'demo' ? ' (simulated walk)' : ''}</button>}</div>);
+    const issues = R.barriers.filter((b) => b.kind !== 'unverified');
+    const noData = Math.round(R.unknownShare * 100);
+    return (
+      <div className="details">
+        {issues.length ? <ul className="ways">{issues.map((b, i) => (
+          <li key={i}><button onClick={() => { setRouteDetails(false); if (b.hazardId) setSelected({ type: 'hazard', id: b.hazardId }); setTimeout(() => mapH.current?.flyTo(b.ll, 18), 80); }}>
+            <span className={'dot ' + (b.kind === 'critical' ? 'c-not' : 'c-partial')} /><span className="grow"><b>{b.label}</b><small>{b.where} · after {fmt.dist(b.s)}</small></span></button></li>))}</ul>
+          : <p>Nothing reported on this route.</p>}
+        {noData > 0 && <p className="small">{noData}% of this route has no data.</p>}
+        {R.ratings && <div className="ratings">
+          {([['Hazards', R.ratings.hazards], ['Ramps and slopes', R.ratings.ramp], ['Sidewalk width', R.ratings.width], ['Surface', R.ratings.surface]] as const).map(([k, v]) => (
+            <div key={k} className="rat"><div className="row"><span className="grow">{k}</span><b>{fmt.n1(v)}</b></div><div className="bar"><i style={{ width: (v / 5) * 100 + '%' }} /></div></div>))}
+        </div>}
+        <p className="small">Accessibility data here is simulated for this prototype. Always check conditions on site.</p>
+      </div>
+    );
   }
 
   /* ================= screens ================= */
   const isMapScreen = screen === 'home' || (screen === 'route' && !routeDetails) || screen === 'nav' || screen === 'arrive' || (screen === 'report' && pickMode);
   const navState = screen === 'nav' && R && dest && nav ? engine.navState(R, navS, dest.name) : null;
-  const topPad = screen === 'nav' ? 130 : 110;
-  const locChip = (
-    <button className={'loc-chip ' + (mode === 'gps' ? (gpsUsable ? 'live ' + accTone : 'warn') : 'demo')} onClick={() => go('prefs')} aria-label="Location settings">
-      <Icon name="locate" size={14} /> {mode === 'demo' ? 'Demo position' : gpsUsable ? `Live · ±${Math.round(acc!)} m` : geo.status === 'requesting' ? 'Locating…' : 'No live location'}
-    </button>
-  );
+  const topPad = screen === 'nav' ? 130 : 90;
+  const locOk = mode === 'demo' || gpsInArea;
   const fabs = (
     <div className="fabs">
-      <button className={'fab' + (following ? ' on' : '')} aria-label="Recenter on my position" aria-pressed={following} onClick={recenter}><Icon name="locate" /></button>
-      <button className="fab" aria-label="Map layers" onClick={() => setLayersOpen(true)}><Icon name="layers" /></button>
+      <button className={'fab' + (following ? ' on' : '')} aria-label="Show my position" onClick={recenter}><Icon name="locate" size={24} /></button>
       {Math.abs(bearing) > 1 && <button className="fab" aria-label="Point the map north" onClick={() => mapH.current?.resetNorth()}><span className="compass" style={{ transform: `rotate(${-bearing}deg)` }}>N</span></button>}
     </div>
   );
 
   let overlay: ReactNode = null, bottom: ReactNode = null;
   if (screen === 'home') {
-    overlay = (<><div className="top"><button className="searchbar" onClick={() => go('search')}><Icon name="search" /><span>Where would you like to go?</span></button><div className="row gap wrap"><button className="sim-pill" onClick={() => go('about')}><Icon name="info" size={14} /> Simulated accessibility data</button>{locChip}</div></div>{fabs}</>);
-    bottom = (<>{featureCard() || (
-      <div className="card hint"><p className="small"><b>{locNote}</b></p>
-        <div className="row gap wrap">
-          {mode === 'demo' ? <button className="btn sm" onClick={startGps}><Icon name="locate" size={16} /> Use my live location</button>
-            : <>{(geo.status === 'denied' || geo.status === 'unavailable') && <button className="btn sm" onClick={geo.retry}>Try again</button>}<button className="btn line sm" onClick={useDemo}>Use the demo position</button></>}
-          <button className="btn report sm" onClick={() => openReport(null)}><Icon name="plus" size={16} /> Report a hazard</button>
-        </div></div>)}{tabbar()}</>);
+    overlay = (<><div className="top"><div className="searchrow"><button className="searchbar" onClick={() => go('search')}><Icon name="search" /><span>Where do you want to go?</span></button><button className="icon-btn solid" aria-label="About this app" onClick={() => go('about')}><Icon name="info" /></button></div></div>{fabs}</>);
+    bottom = (<>
+      {featureCard() || <>
+        <button className="fab-report" onClick={() => openReport(null)}><Icon name="plus" size={20} /> Report a problem</button>
+        <div className={'loc-card' + (locOk ? '' : ' warn')}>
+          <span className="grow small">{locNote}</span>
+          {mode === 'demo' ? <button className="linkbtn" onClick={startGps}>Use my location</button>
+            : !locOk && <button className="linkbtn" onClick={geo.status === 'denied' || geo.status === 'unavailable' ? geo.retry : useDemo}>{geo.status === 'denied' || geo.status === 'unavailable' ? 'Try again' : 'Use sample'}</button>}
+        </div></>}
+      {tabbar()}</>);
   } else if (screen === 'route') {
     overlay = (<><div className="top"><div className="row gap"><button className="icon-btn solid" aria-label="Back" onClick={() => { setPlan(null); setDest(null); go('home'); }}><Icon name="back" /></button><div className="tobar grow"><small>To</small> <b>{dest?.name}</b></div></div></div>{fabs}</>);
-    bottom = (<div className="routewrap">{routeSheet()}{startActions()}</div>);
+    bottom = routeCard();
   } else if (screen === 'nav' && navState && R && nav) {
-    overlay = (<><div className="top"><div className="instr"><span className="instr-ic"><Icon name={navState.icon} size={30} /></span><div><b>{nav.off ? 'Off the path. Finding a new one…' : navState.text}</b><small>on {navState.street}</small></div></div></div>{fabs}</>);
+    overlay = (<><div className="top"><div className="instr"><span className="instr-ic"><Icon name={navState.icon} size={30} /></span><div><b>{nav.off ? 'Off the route. Finding a new one…' : navState.text}</b><small>{navState.street}</small></div></div></div>{fabs}</>);
     bottom = (<div className="sheet navsheet">
+      <div className="row"><p className="big-stat grow"><b>{fmt.mins(navState.timeLeft)}</b> · {fmt.dist(navState.remTotal)} left</p></div>
       <div className="bar"><i style={{ width: (navS / Math.max(1, R.length)) * 100 + '%' }} /></div>
-      <div className="stats"><div><b>{fmt.mins(navState.timeLeft)}</b><small>Time left</small></div><div><b>{fmt.dist(navState.remTotal)}</b><small>Distance left</small></div><div><b>{new Date(Date.now() + navState.timeLeft * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</b><small>Arrive at</small></div></div>
-      {nav.kind === 'gps' ? <p className="small">{locNote} If you leave the path by more than {OFF_ROUTE_M} m, WheelPath finds a new one.{nav.reroutes ? ` Re-routed ${nav.reroutes}×.` : ''}</p> : (<>
-        <div className="row gap"><button className="icon-btn solid dark" aria-label={nav.playing ? 'Pause' : 'Resume'} onClick={() => setNav((n) => (n ? { ...n, playing: !n.playing } : n))} disabled={!!nav.off}><Icon name={nav.playing ? 'pause' : 'play'} /></button>
-          <div className="seg grow" role="radiogroup" aria-label="Simulation speed">{[1, 4, 8, 16].map((v) => <button key={v} role="radio" aria-checked={nav.speed === v} className={nav.speed === v ? 'on' : ''} onClick={() => setNav((n) => (n ? { ...n, speed: v } : n))}>{v}×</button>)}</div></div>
-        <div className="row gap"><button className="btn line sm grow" onClick={wrongTurn} disabled={!!nav.off}>Simulate a wrong turn</button></div>
-        <p className="small">Simulated walk along the route at wheelchair pace ({nav.speed}× speed).{nav.reroutes ? ` Re-routed ${nav.reroutes}×.` : ''} You can also drag the dark dot off the path.</p></>)}
-      <button className="btn line" onClick={() => endNav(false)}>Stop navigation</button>
+      <div className="row gap">
+        {nav.kind === 'demo' && <button className="btn line grow" onClick={() => setNav((n) => (n ? { ...n, playing: !n.playing } : n))} disabled={!!nav.off}><Icon name={nav.playing ? 'pause' : 'play'} size={18} /> {nav.playing ? 'Pause' : 'Resume'}</button>}
+        <button className="btn stop grow" onClick={() => endNav(false)}>Stop</button>
+      </div>
+      {nav.kind === 'demo' && <>
+        <button className="linkbtn" onClick={() => setDemoOpen((v) => !v)} aria-expanded={demoOpen}>{demoOpen ? 'Hide demo controls' : 'Demo controls'}</button>
+        {demoOpen && <div className="demo">
+          <div className="seg" role="radiogroup" aria-label="Speed">{[1, 4, 8, 16].map((v) => <button key={v} role="radio" aria-checked={nav.speed === v} className={nav.speed === v ? 'on' : ''} onClick={() => setNav((n) => (n ? { ...n, speed: v } : n))}>{v}×</button>)}</div>
+          <button className="btn line sm" onClick={wrongTurn} disabled={!!nav.off}>Take a wrong turn</button>
+          <p className="small">This is a simulated walk. You can also drag the dark dot off the route.</p>
+        </div>}</>}
     </div>);
   } else if (screen === 'arrive' && dest) {
-    bottom = (<div className="sheet"><h2>You’ve arrived at {dest.name}</h2><p className="small">How accessible was this path?</p>
+    bottom = (<div className="sheet center"><span className="v-ic c-accessible big-ic"><Icon name="check" size={30} /></span><h2>You’ve arrived</h2><p className="small">{dest.name}</p>
+      <p>How was this route?</p>
       <div className="rate" role="radiogroup" aria-label="Your rating">{[1, 2, 3, 4, 5].map((v) => <button key={v} role="radio" aria-checked={arrivalRating === v} aria-label={v + ' stars'} className={arrivalRating >= v ? 'on' : ''} onClick={() => setArrivalRating(v)}>★</button>)}</div>
-      <div className="row gap"><button className="btn report grow" onClick={() => openReport(null)}>Report a problem</button><button className="btn grow" onClick={() => { if (arrivalRating) say('Thanks for rating this path.'); setPlan(null); setDest(null); go('home'); }}>Done</button></div></div>);
+      <button className="btn big" onClick={() => { if (arrivalRating) say('Thank you for rating this route.'); setPlan(null); setDest(null); go('home'); }}>Done</button>
+      <button className="linkbtn" onClick={() => openReport(null)}>Report a problem on the way</button></div>);
   } else if (screen === 'report' && pickMode) {
-    overlay = <div className="top"><div className="card row gap"><b className="grow">Tap the map where the problem is</b><button className="btn line sm" onClick={() => setPickMode(false)}>Cancel</button></div></div>;
+    overlay = <div className="top"><div className="card row gap"><b className="grow">Tap the spot on the map</b><button className="btn line sm" onClick={() => setPickMode(false)}>Cancel</button></div></div>;
   }
 
   let page: ReactNode = null;
+  const back = (to: () => void, label = 'Back') => <button className="icon-btn" aria-label={label} onClick={to}><Icon name="back" /></button>;
   if (screen === 'route' && routeDetails) {
-    page = (<div className="page"><div className="pagehead row gap"><button className="icon-btn" aria-label="Back to the map" onClick={() => setRouteDetails(false)}><Icon name="back" /></button><h1 className="grow h-sm">To {dest?.name}</h1></div>{routeSheet()}<div className="page-actions">{startActions()}</div></div>);
+    page = (<div className="page"><div className="pagehead row gap">{back(() => setRouteDetails(false), 'Back to the map')}<h1 className="grow h-sm">What’s on the way</h1></div>{routeDetailsPage()}</div>);
   } else if (screen === 'search') {
     const res = engine.searchPlaces(query, shownPos || net.defaultYou, CATS);
-    page = (<div className="page"><div className="pagehead row gap"><button className="icon-btn" aria-label="Back" onClick={() => go('home')}><Icon name="back" /></button><input autoFocus className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search places" aria-label="Search places" /></div>
-      <div className="chips">{Object.entries(CATS).map(([k, c]) => <button key={k} className={'chip' + (query === c.label ? ' on' : '')} onClick={() => setQuery(query === c.label ? '' : c.label)}>{c.label}</button>)}</div>
-      <p className="small">{net.places.length} places from OpenStreetMap, at their mapped positions. Distances are from {mode === 'gps' && gpsLL ? 'your live location' : 'the demo position'}.</p>
-      <ul className="list">{res.slice(0, 40).map(({ p, d, inCov }) => (
-        <li key={p.id}><button onClick={() => { setQuery(''); setScreen('home'); select({ type: 'place', id: p.id }); }}><span className="dot" style={{ background: CATS[p.cat].color }} /><span className="grow"><b>{p.name}</b><small>{CATS[p.cat].label} · {fmt.dist(d)} away</small></span>{inCov ? <Tag kind="info">Data</Tag> : <Tag kind="limited">No data</Tag>}</button></li>))}
+    page = (<div className="page"><div className="pagehead row gap">{back(() => go('home'))}<input autoFocus className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search places" aria-label="Search places" /></div>
+      <div className="chips">{(['health', 'school', 'market', 'gov', 'food', 'bank'] as const).map((k) => <button key={k} className={'chip' + (query === CATS[k].label ? ' on' : '')} onClick={() => setQuery(query === CATS[k].label ? '' : CATS[k].label)}>{CATS[k].label}</button>)}</div>
+      <ul className="list">{res.slice(0, 40).map(({ p, d }) => (
+        <li key={p.id}><button onClick={() => { setQuery(''); setScreen('home'); select({ type: 'place', id: p.id }); }}><span className="dot" style={{ background: CATS[p.cat].color }} /><span className="grow"><b>{p.name}</b><small>{CATS[p.cat].label} · {fmt.dist(d)}</small></span></button></li>))}
         {!res.length && <li className="small empty">No places match.</li>}</ul></div>);
   } else if (screen === 'reports') {
     const from = shownPos || net.defaultYou;
     const list = reports.map((r) => ({ r, h: hazardById(r.hazardId) })).filter((x): x is { r: Report; h: Hazard } => !!x.h)
       .map((x) => ({ ...x, d: haversine(from, hzAnchor(x.h)) }))
       .filter((x) => (rfilter === 'near' ? x.d <= 500 : rfilter === 'crit' ? x.h.sev === 3 : true)).sort((a, b) => a.d - b.d);
-    page = (<div className="page"><div className="pagehead"><h1>Reports</h1><p className="lead">Simulated hazard reports placed on real streets, plus any you add. Closest first.</p></div>
-      <div className="chips">{([['all', 'All'], ['near', 'Within 500 m'], ['crit', 'Critical']] as const).map(([k, l]) => <button key={k} className={'chip' + (rfilter === k ? ' on' : '')} onClick={() => setRfilter(k)}>{l}</button>)}</div>
-      <ul className="list">{list.map(({ r, h, d }) => {
-        const street = h.spans?.[0] ? engine.byId[h.spans[0].edgeId]?.name : 'No mapped pathway';
-        return (<li key={r.id}><button onClick={() => { setScreen('home'); select({ type: 'hazard', id: h.id }); }}>
-          <span className={'hz-ic sev' + h.sev}>!</span><span className="grow"><b>{r.title}</b><small>{street} · {fmt.dist(d)} away · {h.geometry.type === 'Point' ? 'point' : h.geometry.type === 'LineString' ? 'blocked stretch' : 'area'} · {r.comments.length} comment{r.comments.length === 1 ? '' : 's'}</small><SevTag sev={h.sev} /></span></button></li>);
-      })}</ul>
-      <button className="btn report floating" onClick={() => openReport(null)}><Icon name="plus" size={18} /> Report a hazard</button>
+    page = (<div className="page"><div className="pagehead"><h1>Problems</h1><p className="lead">Reported problems on the paths nearby.</p></div>
+      <div className="chips">{([['all', 'All'], ['near', 'Near me'], ['crit', 'Blocking']] as const).map(([k, l]) => <button key={k} className={'chip' + (rfilter === k ? ' on' : '')} onClick={() => setRfilter(k)}>{l}</button>)}</div>
+      <ul className="list">{list.map(({ r, h, d }) => (
+        <li key={r.id}><button onClick={() => { setScreen('home'); select({ type: 'hazard', id: h.id }); }}>
+          <span className={'hz-ic sev' + h.sev}>!</span><span className="grow"><b>{r.title}</b><small>{h.spans?.[0] ? engine.byId[h.spans[0].edgeId]?.name : 'Not on a path'} · {fmt.dist(d)}</small></span></button></li>))}</ul>
+      <button className="btn report floating" onClick={() => openReport(null)}><Icon name="plus" size={18} /> Report a problem</button>
       {tabbar()}</div>);
   } else if (screen === 'report' && !pickMode) {
     const sp = reportSpans[0], e = sp ? engine.byId[sp.edgeId] : null;
-    const gap = reportLL && e ? Math.round(haversine(reportLL, engine.edgeAt(e, sp.t0))) : null;
-    page = (<div className="page"><div className="pagehead row gap"><button className="icon-btn" aria-label="Back" onClick={() => go('home')}><Icon name="back" /></button><h1 className="grow">Report a hazard</h1></div>
+    page = (<div className="page"><div className="pagehead row gap">{back(() => go('home'))}<h1 className="grow h-sm">Report a problem</h1></div>
       <form className="form" onSubmit={(ev) => { ev.preventDefault(); submitReport(); }}>
-        <fieldset><legend>What is the problem?</legend><div className="chips">{(Object.keys(HAZARD_TYPES) as HazardType[]).map((k) => <button type="button" key={k} className={'chip' + (form.type === k ? ' on' : '')} aria-pressed={form.type === k} onClick={() => setForm((f) => ({ ...f, type: k, sev: HAZARD_TYPES[k].sev }))}>{HAZARD_TYPES[k].label}</button>)}</div></fieldset>
-        <fieldset><legend>How bad is it?</legend><div className="seg">{([1, 2, 3] as Severity[]).map((v) => <button type="button" key={v} className={form.sev === v ? 'on' : ''} aria-pressed={form.sev === v} onClick={() => setForm((f) => ({ ...f, sev: v }))}>{SEV[v].label}</button>)}</div><p className="small">“Blocks wheelchair” makes paths through this spot rate as not accessible.</p></fieldset>
-        <fieldset><legend>Where?</legend>
-          {reportLL ? <p><b>{e ? e.name : 'Not on a pathway'}</b> <span className="small">{form.ll ? 'picked on the map' : mode === 'gps' ? 'at your live location' : 'at the demo position'} · {ll5(reportLL)}{e && gap != null ? ` · ${gap} m from the pathway` : ''}</span></p> : <p className="small">Turn on your live location or pick the spot on the map.</p>}
-          {reportLL && !e && <p className="small warn-text">No pathway within {RULES.attachPoint} m. Pick a spot on a pathway so the report can affect routes.</p>}
-          <button type="button" className="btn line sm" onClick={() => setPickMode(true)}><Icon name="pin" size={16} /> Pick on the map</button></fieldset>
-        <label className="field"><span>Details (optional)</span><textarea className="input" rows={3} value={form.note} onChange={(e2) => setForm((f) => ({ ...f, note: e2.target.value }))} /></label>
-        <p className="small">The report keeps the exact map position you chose. Goes to {HAZARD_TYPES[form.type].agency}. In this prototype reports are saved in this browser only; sharing them with other users comes next.</p>
-        <button className="btn report" type="submit" disabled={!reportLL || !e}>Submit report</button>
+        <fieldset><legend>1. What is the problem?</legend><div className="tiles">{(Object.keys(HAZARD_TYPES) as HazardType[]).map((k) => <button type="button" key={k} className={'tile' + (form.type === k ? ' on' : '')} aria-pressed={form.type === k} onClick={() => setForm((f) => ({ ...f, type: k, sev: HAZARD_TYPES[k].sev }))}>{HAZARD_TYPES[k].label}</button>)}</div></fieldset>
+        <fieldset><legend>2. How bad is it?</legend><div className="stack">{([1, 2, 3] as Severity[]).map((v) => <button type="button" key={v} className={'choice' + (form.sev === v ? ' on' : '')} aria-pressed={form.sev === v} onClick={() => setForm((f) => ({ ...f, sev: v }))}><span className={'dot sev' + v} />{SEV[v].label}</button>)}</div></fieldset>
+        <fieldset><legend>3. Where is it?</legend>
+          <div className="where"><span className="grow">{!reportLL ? 'Choose the spot on the map.' : e ? <><b>{e.name}</b><small>{form.ll ? 'Spot you chose' : 'At your location'}</small></> : <span className="warn-text">That spot is not on a path. Choose a spot on a path.</span>}</span>
+            <button type="button" className="btn line sm" onClick={() => setPickMode(true)}><Icon name="pin" size={16} /> Choose on map</button></div></fieldset>
+        {noteOpen ? <label className="field"><span>Note (optional)</span><textarea className="input" rows={3} value={form.note} onChange={(e2) => setForm((f) => ({ ...f, note: e2.target.value }))} /></label>
+          : <button type="button" className="linkbtn" onClick={() => setNoteOpen(true)}>Add a note</button>}
+        <button className="btn big report" type="submit" disabled={!reportLL || !e}>Send report</button>
+        <p className="small">For now, reports are saved on this device only.</p>
       </form></div>);
   } else if (screen === 'prefs') {
-    const t = (k: keyof Prefs, title: string, desc: string) => (<label className="toggle" key={k}><span className="grow"><b>{title}</b><small>{desc}</small></span><input type="checkbox" checked={prefs[k]} onChange={(e) => setPrefs((p) => ({ ...p, [k]: e.target.checked }))} /><i aria-hidden="true" /></label>);
-    page = (<div className="page"><div className="pagehead"><h1>Preferences</h1><p className="lead">These change which path WheelPath recommends.</p></div>
-      <div className="group">{t('stairs', 'Avoid stairs', 'Never route over steps unless there is no other way.')}{t('steep', 'Avoid steep ramps', 'Adds cost to slopes steeper than 1:12.')}{t('ramps', 'Prioritize curb ramps', 'Prefers crossings with a recorded curb ramp.')}{t('shortest', 'Prioritize shortest path', 'Lets distance count for more than the ratings.')}</div>
-      <h2 className="sec">Your location</h2>
-      <div className="group">
-        <label className="radio"><input type="radio" name="mode" checked={mode === 'demo'} onChange={useDemo} /><span><b>Demo position</b><small>A position near the school that you can drag. Use this away from Valenzuela.</small></span></label>
-        <label className="radio"><input type="radio" name="mode" checked={mode === 'gps'} onChange={startGps} /><span><b>My live location</b><small>Uses your device’s GPS while the app is open. It stays on your device and is never shared.</small></span></label>
-        <p className="small status">{locNote}{mode === 'gps' && (geo.status === 'denied' || geo.status === 'unavailable') && <> <button className="linkbtn" onClick={geo.retry}>Try again</button></>}</p>
-      </div>
-      <button className="btn line" onClick={() => go('about')}>About the data and scoring</button>
+    const t = (on: boolean, set: (v: boolean) => void, title: string, desc?: string) => (<label className="toggle" key={title}><span className="grow"><b>{title}</b>{desc && <small>{desc}</small>}</span><input type="checkbox" checked={on} onChange={(e) => set(e.target.checked)} /><i aria-hidden="true" /></label>);
+    const pf = (k: keyof Prefs) => (v: boolean) => setPrefs((p) => ({ ...p, [k]: v }));
+    const ly = (k: keyof Layers) => (v: boolean) => setLayers((l) => ({ ...l, [k]: v }));
+    page = (<div className="page"><div className="pagehead"><h1>Settings</h1></div>
+      <h2 className="sec">My routes</h2>
+      <div className="group">{t(prefs.stairs, pf('stairs'), 'Avoid stairs')}{t(prefs.steep, pf('steep'), 'Avoid steep slopes')}{t(prefs.ramps, pf('ramps'), 'Prefer curb ramps')}{t(prefs.shortest, pf('shortest'), 'Prefer shorter routes', 'Distance counts more than comfort')}</div>
+      <h2 className="sec">Location</h2>
+      <div className="group">{t(mode === 'gps', (v) => (v ? startGps() : useDemo()), 'Use my real location', 'Your location stays on this device.')}<p className="small status">{locNote}</p></div>
+      <h2 className="sec">Map</h2>
+      <div className="group">{t(layers.hazards, ly('hazards'), 'Show problems')}{t(layers.places, ly('places'), 'Show places')}{t(layers.access, ly('access'), 'Colour paths by accessibility')}{t(layers.curbs, ly('curbs'), 'Show curb ramps')}</div>
+      <div className="legend"><span><i style={{ background: '#2E9E63' }} />Good</span><span><i style={{ background: '#F2A900' }} />Fair</span><span><i style={{ background: '#E0312F' }} />Difficult or blocked</span><span><i className="dash" />No data</span></div>
+      <button className="btn line" onClick={() => go('about')}>About this app</button>
       {tabbar()}</div>);
   } else if (screen === 'about') {
-    page = (<div className="page prose"><div className="pagehead row gap"><button className="icon-btn" aria-label="Back" onClick={() => go('prefs')}><Icon name="back" /></button><h1 className="grow">About the data</h1></div>
-      <h2>What is real</h2><p>Streets, paths and place names come from OpenStreetMap: {net.meta.ways} ways, {net.meta.edges} pathway segments and {net.places.length} places, each at its mapped position. Source: {net.meta.source}{net.meta.osmTimestamp ? `, OpenStreetMap data as of ${new Date(net.meta.osmTimestamp).toLocaleDateString()}` : ''}. © OpenStreetMap contributors (ODbL). Your live location, if you turn it on, comes from your device.</p>
-      <h2>What is simulated</h2><p>Every accessibility value is simulated for this prototype inside a {net.covRadius} m circle around {net.areaName}: widths, slopes, surfaces, curb ramps, and the hazard reports with their comments. None of it is a field survey. Each hazard has a fixed map geometry (a point, a blocked stretch or an area), and the engine attaches it to the pathway stretches it touches. Outside the circle there is no data, and stretches with no data are never rated accessible.</p>
-      <h2>How a path is rated</h2><p>Each pathway gets 1 to 5 stars for width, slope, surface and reported hazards. A critical barrier (narrower than 0.90 m, steeper than 10 %, a broken surface, stairs, a missing curb ramp or a hazard that blocks a wheelchair) makes a path “Not accessible”. If more than half of it has no data it is “Limited data”. WheelPath recommends the highest-rated path with no critical barrier.</p>
-      <table className="rules"><thead><tr><th>Width</th><th>Stars</th></tr></thead><tbody>{RULES.stars.width.map(([a, b]) => <tr key={a}><td>{a}</td><td>{b}</td></tr>)}</tbody></table>
-      <table className="rules"><thead><tr><th>Slope</th><th>Stars</th></tr></thead><tbody>{RULES.stars.grade.map(([a, b]) => <tr key={a}><td>{a}</td><td>{b}</td></tr>)}</tbody></table>
-      <p className="small">These thresholds are prototype defaults and must be confirmed against the NCDA 2024 Revised IRR checklist (BP 344). Ratings can’t guarantee safety.</p></div>);
+    page = (<div className="page prose"><div className="pagehead row gap">{back(() => go('home'))}<h1 className="grow h-sm">About WheelPath</h1></div>
+      <p>WheelPath helps wheelchair users find the most accessible route. It checks each path for width, slope, surface, curb ramps and reported problems.</p>
+      <h2>Please note</h2><p>This is a research prototype. The streets and places are real (OpenStreetMap). The accessibility information is <b>sample data</b>, not a field survey, so always check conditions on site. Paths with no data are never called accessible.</p>
+      <h2>Route ratings</h2><ul className="plain"><li><b>Accessible</b>: no barriers found in the data.</li><li><b>Partially accessible</b>: some difficult parts, or parts with no data.</li><li><b>Not accessible</b>: a barrier that may block a wheelchair, such as stairs, a missing curb ramp, a very narrow or steep path, or a blocking problem.</li><li><b>Not enough data</b>: most of the route has no data.</li></ul>
+      <p className="small">Area: {net.covRadius} m around {net.areaName}. Map data © OpenStreetMap contributors. Thresholds are prototype defaults to be confirmed against the NCDA 2024 Revised IRR checklist (BP 344).</p></div>);
   }
-
-  const LAYER_ROWS = [['access', 'Accessibility colours', 'Colour each pathway by its average stars'], ['hazards', 'Hazard reports', 'Points, blocked stretches and areas'], ['curbs', 'Curb ramps', 'Crossings with a ramp, a steep ramp or none'], ['places', 'Places', 'Schools, pharmacies, markets and more'], ['coverage', 'Area with data', 'Dims everything outside the simulated data'], ['buffers', `Hazard buffers (${RULES.hazardBuffer} m)`, 'Circles used to find nearby hazards']] as const;
 
   return (
     <div className={'app' + (isMapScreen ? '' : ' paged')}>
       <MapView engine={engine} hazardRev={hazardRev} hazards={hazards} places={net.places} layers={layers}
         you={shownPos} youKind={mode} youAccuracy={mode === 'gps' && gpsLL ? acc : null} snapped={snapped?.ll ?? null}
-        youDraggable={mode === 'demo' && !(screen === 'nav' && nav?.off)} onYouDrag={onYouDrag} dest={dest ? { name: dest.name, ll: dest.ll } : null} routes={screen === 'route' || screen === 'nav' ? plan?.routes ?? [] : []}
-        sel={sel} doneS={screen === 'nav' ? navS : null} selected={selected} onSelect={select}
+        youDraggable={mode === 'demo' && !(screen === 'nav' && nav?.off)} onYouDrag={onYouDrag} dest={dest ? { name: dest.name, ll: dest.ll } : null} routes={screen === 'route' ? (plan?.routes ?? []).filter((_, i) => showAlts || i === sel) : screen === 'nav' && R ? [R] : []}
+        sel={screen === 'route' && !showAlts ? 0 : screen === 'nav' ? 0 : sel} doneS={screen === 'nav' ? navS : null} selected={selected} onSelect={select}
         onMapClick={pickMode ? (ll) => { setForm((f) => ({ ...f, ll })); setPickMode(false); } : undefined}
         onUserMove={() => setFollowing(false)} onBearing={setBearing}
         padding={wide ? { top: 0, bottom: 0, left: isMapScreen ? 460 : 0 } : { top: isMapScreen ? topPad : 0, bottom: isMapScreen ? padBottom : 0 }} handle={mapH} />
       {isMapScreen && <>{overlay}<div className="bottom" ref={bottomRef}>{bottom}</div></>}
       {page}
-      {layersOpen && (
-        <div className="backdrop" onClick={() => setLayersOpen(false)}><div className="sheet layers" role="dialog" aria-label="Map layers" onClick={(e) => e.stopPropagation()}>
-          <div className="row"><h2 className="grow">Map layers</h2><button className="icon-btn" aria-label="Close" onClick={() => setLayersOpen(false)}><Icon name="close" /></button></div>
-          {LAYER_ROWS.map(([k, t, d]) => (
-            <label className="toggle" key={k}><span className="grow"><b>{t}</b><small>{d}</small></span><input type="checkbox" checked={layers[k]} onChange={(e) => setLayers((l) => ({ ...l, [k]: e.target.checked }))} /><i aria-hidden="true" /></label>))}
-          <div className="legend"><span><i style={{ background: '#2E9E63' }} />4 stars or more</span><span><i style={{ background: '#F2A900' }} />3 to 4</span><span><i style={{ background: '#F27A1A' }} />2 to 3</span><span><i style={{ background: '#E0312F' }} />Under 2, or a critical barrier</span><span><i className="dash" />No data</span><span><i className="hzline" />Blocked stretch</span></div>
-        </div></div>
-      )}
       {toast && <div className={'toast' + (screen === 'nav' ? ' low' : '')} role="status">{toast}</div>}
     </div>
   );
