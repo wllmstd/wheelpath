@@ -60,7 +60,13 @@ function supabase(): Store {
         }
         photo_url = `${url}/storage/v1/object/public/${BUCKET}/${photo_path}`;
       }
-      return (await rest('', { method: 'POST', body: JSON.stringify({ id, ...r, status: 'pending', photo_url, photo_path }) }))[0];
+      try {
+        return (await rest('', { method: 'POST', body: JSON.stringify({ id, ...r, status: 'pending', photo_url, photo_path }) }))[0];
+      } catch (e) {
+        // the report was not saved, so do not leave its photo behind in storage
+        if (photo_path) await fetch(`${url}/storage/v1/object/${BUCKET}`, { method: 'DELETE', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ prefixes: [photo_path] }) }).catch(() => null);
+        throw e;
+      }
     },
     async update(id, patch) {
       return (await rest(`?id=eq.${enc(id)}`, { method: 'PATCH', body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }) }))[0] || null;
