@@ -80,6 +80,10 @@ export interface Report {
   comments: Comment[];
   note?: string;
   simulated: boolean;
+  /** photo taken by the reporter (community reports) */
+  photo?: string;
+  /** a community report approved by an admin */
+  approved?: boolean;
 }
 
 export interface PlaceInfo {

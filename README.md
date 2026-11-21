@@ -44,9 +44,28 @@ The server loads streets in this order:
 
 Refresh the snapshot with `npm run fetch-streets` (retries with back-off when the servers are busy). The data is © OpenStreetMap contributors, ODbL; keep the attribution visible.
 
+## Reports, photos and the admin dashboard
+
+- Anyone can report a problem, with an optional photo (phones can take one with the camera). A report starts as **pending** and is **not** shown on the map or used for routing until an admin approves it. After sending, the app shows a "waiting for approval" message, and the Problems tab lists the person's own reports with their status.
+- **Admin dashboard**: `/admin` (or Settings → Sign in). Sign in with `admin@wheelpath.com` and any password. Admins can approve, reject (with an optional reason), mark as fixed, hide from the map, edit (problem, severity, notes, and the location by dragging the pin) or delete a report. It works on phones and on wide screens.
+- **Sign-in is a prototype**: any email and password are accepted, and `admin@wheelpath.com` is the admin. The session is a signed cookie (`SESSION_SECRET`), but there is no password check. Replace it with real accounts (for example Supabase Auth) before a public launch.
+- Photos are resized in the browser (longest side 1600 px, JPEG) before upload, then checked on the server (JPEG, PNG or WebP, 6 MB at most).
+
+### Storage: Supabase
+
+1. Create a free project at supabase.com.
+2. In the SQL Editor, run [`supabase/schema.sql`](supabase/schema.sql). It creates the `reports` table (row-level security on, no public access) and the public `report-photos` bucket.
+3. In Project Settings → API, copy the Project URL and the **service_role** (or **secret**) key.
+4. Put them in `.env.local` for local work, and in Vercel → Project → Settings → Environment Variables for the live site:
+   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and a long random `SESSION_SECRET`. Redeploy after adding them.
+
+Without Supabase settings, `npm run dev` keeps reports in a local `.wheelpath-data/` folder (ignored by git), so you can try everything offline. On Vercel the app refuses to save reports until Supabase is configured, because Vercel's disk is not permanent.
+
+API: `GET /api/reports` (approved only) · `GET /api/reports?ids=…` (your own, any status) · `POST /api/reports` (multipart) · `GET /api/admin/reports` · `PATCH|DELETE /api/admin/reports/:id` · `POST /api/auth/login|logout` · `GET /api/auth/me`.
+
 ## Deploy
 
-- **Vercel**: import the GitHub repo; no settings needed.
+- **Vercel**: import the GitHub repo and add the Supabase and `SESSION_SECRET` environment variables (see above).
 - **Any Node host** (Render, Railway, a VPS): `npm run build`, then run `node .next/standalone/server.js` after copying `.next/static` to `.next/standalone/.next/static` and `data/` to `.next/standalone/data` (or just `npm start`).
 - Optional environment variables are listed in `.env.example` (map style URL, Overpass User-Agent).
 
@@ -63,7 +82,13 @@ src/lib/engine/engine.ts       hazard spatial join, scoring, snapping, weighted 
 src/lib/server/streets.ts      server-only street loading (snapshot, cache, Overpass)
 src/app/api/streets/route.ts   GET /api/streets -> the network as JSON
 src/components/MapView.tsx     MapLibre map: GeoJSON layers for pathways, hazards, places, routes, GPS position
-src/components/WheelPathApp.tsx screens: map, search, route, navigation, arrival, reports, report form, preferences, about
+src/components/WheelPathApp.tsx screens: map, search, route, navigation, arrival, reports, report form, preferences, sign-in, about; top navbar on wide screens
+src/components/admin/          admin dashboard (/admin) and its small location map
+src/lib/reports.ts             report statuses and how an approved report becomes a map hazard
+src/lib/server/store.ts        report storage: Supabase (REST + Storage) or a local folder in development
+src/lib/server/session.ts      prototype sign-in (signed cookie; admin@wheelpath.com is the admin)
+src/app/api/reports, admin/, auth/  the report, admin and sign-in API
+supabase/schema.sql            database table and photo bucket
 src/hooks/useGeolocation.ts    watchPosition() with visible states (off, requesting, active, denied, unavailable), retry and cleanup
 legacy/index.html              the earlier single-file prototype
 ```
@@ -72,6 +97,7 @@ In the browser console, `window.wheelpath.engine` exposes the routing engine and
 
 ## Not built yet
 
-- Sharing hazard reports between users in real time (planned: Node API + PostgreSQL/PostGIS + Socket.IO). Reports are saved in each browser for now.
+- Live push of new reports (the app checks for newly approved reports every minute and when the tab is reopened).
 - Importing real survey data (GeoJSON of segments with width, slope, surface; curb-ramp points; hazards) in place of the simulated layer.
-- Accounts and sign-in.
+- Real accounts with passwords (sign-in is a prototype; see above).
+- Comments on reports are kept in the browser only.
