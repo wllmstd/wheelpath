@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { Icon } from './ui';
 
-/** prototype sign-in: any password works; admin@wheelpath.com opens the admin dashboard */
+/** admin sign-in form (only the WheelPath accounts can sign in) */
 export function SignIn({ onSignIn, onBack, title = 'Sign in', admin = false }: { onSignIn: (email: string, password: string) => Promise<void>; onBack?: () => void; title?: string; admin?: boolean }) {
   const [email, setEmail] = useState(admin ? 'admin@wheelpath.com' : '');
   const [password, setPassword] = useState('');
@@ -21,7 +21,6 @@ export function SignIn({ onSignIn, onBack, title = 'Sign in', admin = false }: {
           {err && <p className="form-err" role="alert">{err}</p>}
           <button className="btn big" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
           {onBack && !admin && <button type="button" className="linkbtn center" onClick={onBack}>Continue without signing in</button>}
-          <p className="small">Prototype: any password works and there is no real security yet. Admins sign in with admin@wheelpath.com.</p>
         </form>
       </div>
     </div>

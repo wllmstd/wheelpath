@@ -13,6 +13,7 @@ const MAX_PHOTO = 6 * 1024 * 1024;
 /** GET /api/reports            -> approved reports (shown on the map)
     GET /api/reports?ids=a,b     -> the caller's own reports, any status (ids are kept in their browser) */
 export async function GET(req: Request) {
+  if (!(await getSession())) return NextResponse.json({ error: 'Please sign in.' }, { status: 401 });
   try {
     const ids = new URL(req.url).searchParams.get('ids');
     const store = getStore();
@@ -32,6 +33,8 @@ function sniff(b: Buffer): Photo['ext'] | null {
 
 /** POST multipart/form-data: type, sev, lng, lat, note?, photo? -> a new report waiting for review */
 export async function POST(req: Request) {
+  const s = await getSession();
+  if (!s) return NextResponse.json({ error: 'Please sign in again to send a report.' }, { status: 401 });
   try {
     const f = await req.formData();
     const type = f.get('type'), sev = Number(f.get('sev')), lng = Number(f.get('lng')), lat = Number(f.get('lat'));
@@ -47,8 +50,7 @@ export async function POST(req: Request) {
       if (!ext) return NextResponse.json({ error: 'The photo must be a JPEG, PNG or WebP image.' }, { status: 415 });
       photo = { data, ext, contentType: ext === 'jpg' ? 'image/jpeg' : 'image/' + ext };
     }
-    const s = await getSession();
-    const row = await getStore().create({ type, sev, title: HAZARD_TYPES[type].label, note: note || null, lng, lat, reporter_name: s?.name || null, reporter_email: s?.email || null }, photo);
+    const row = await getStore().create({ type, sev, title: HAZARD_TYPES[type].label, note: note || null, lng, lat, reporter_name: s.name, reporter_email: s.email }, photo);
     return NextResponse.json({ report: toPublic(row) }, { status: 201 });
   } catch (e) { return errorResponse(e); }
 }

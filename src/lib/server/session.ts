@@ -1,11 +1,17 @@
-/* SERVER ONLY. Simple sign-in for the prototype.
-   Any email and password are accepted. The email admin@wheelpath.com gets the admin role.
-   The session is a signed cookie, so it cannot be edited in the browser, but there is
-   NO real password check: replace this with proper accounts (e.g. Supabase Auth) before a public launch. */
-import { createHmac, timingSafeEqual } from 'node:crypto';
+/* SERVER ONLY. Sign-in with two fixed accounts; every other email is refused.
+     admin@wheelpath.com  -> admin  (password in WHEELPATH_ADMIN_PASSWORD)
+     user@wheelpath.com   -> user   (password in WHEELPATH_USER_PASSWORD)
+   Passwords live in environment variables (Vercel settings / .env.local), never in the code on GitHub.
+   The session is a cookie signed with SESSION_SECRET, so it cannot be edited in the browser. */
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { cookies } from 'next/headers';
 
 export const ADMIN_EMAIL = 'admin@wheelpath.com';
+const ACCOUNTS = [
+  { email: ADMIN_EMAIL, name: 'Admin', role: 'admin' as const, passwordVar: 'WHEELPATH_ADMIN_PASSWORD' },
+  { email: 'user@wheelpath.com', name: 'WheelPath User', role: 'user' as const, passwordVar: 'WHEELPATH_USER_PASSWORD' },
+];
+const account = (email: string) => ACCOUNTS.find((a) => a.email === email.trim().toLowerCase());
 export const COOKIE = 'wp_session';
 const MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
@@ -17,10 +23,21 @@ function secret() {
 const b64 = (s: string) => Buffer.from(s).toString('base64url');
 const sign = (data: string) => createHmac('sha256', secret()).update(data).digest('base64url');
 
-export function makeSession(email: string, name?: string): Session {
-  const e = email.trim().toLowerCase();
-  const fallback = e.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  return { email: e, name: (name || '').trim().slice(0, 60) || fallback, role: e === ADMIN_EMAIL ? 'admin' : 'user' };
+/** the session for a known account, or null for any other email */
+export function makeSession(email: string): Session | null {
+  const a = account(email);
+  return a ? { email: a.email, name: a.name, role: a.role } : null;
+}
+
+const digest = (s: string) => createHash('sha256').update(s).digest();
+/** 'ok' | 'wrong' (unknown email or wrong password) | 'unset' (the password variable is missing on the server) */
+export function checkPassword(email: string, password: string): 'ok' | 'wrong' | 'unset' {
+  const a = account(email);
+  const want = a ? process.env[a.passwordVar] : undefined;
+  if (a && !want) { console.error(`[wheelpath] ${a.passwordVar} is not set, so ${a.email} cannot sign in.`); return 'unset'; }
+  // compare fixed-length digests so the check takes the same time whatever is typed
+  const same = timingSafeEqual(digest(password), digest(want ?? '\u0000no-account'));
+  return a && same ? 'ok' : 'wrong';
 }
 
 export function encode(s: Session) {
@@ -35,7 +52,7 @@ export function decode(token: string | undefined): Session | null {
   if (want.length !== got.length || !timingSafeEqual(want, got)) return null;
   try {
     const s = JSON.parse(Buffer.from(data, 'base64url').toString()) as Session;
-    return s && typeof s.email === 'string' ? makeSession(s.email, s.name) : null; // role is always re-derived from the email
+    return s && typeof s.email === 'string' ? makeSession(s.email) : null; // only the two accounts; role comes from the server list
   } catch { return null; }
 }
 

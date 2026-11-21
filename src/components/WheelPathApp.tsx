@@ -7,16 +7,15 @@ import { haversine } from '@/lib/engine/geo';
 import { CATS, CLS_LABEL, CURB_LABEL, HAZARD_TYPES, RULES, SEV, SURF_LABEL, fmt } from '@/lib/engine/rules';
 import type { Hazard, HazardType, LngLat, Network, Place, Plan, Prefs, Report, Severity } from '@/lib/engine/types';
 import { useGeolocation } from '@/hooks/useGeolocation';
-import { useSession } from '@/hooks/useSession';
+import { useSession, type Session } from '@/hooks/useSession';
 import { compressPhoto } from '@/lib/client/photo';
 import { STATUS_LABEL, agoText, toHazard, type PublicReport } from '@/lib/reports';
 import type { Feature, Layers, MapHandle } from './MapView';
 import { ClsTag, Icon, SevTag, Stars, Tag } from './ui';
-import { SignIn } from './SignIn';
 
 const MapView = dynamic(() => import('./MapView'), { ssr: false, loading: () => <div className="map map-loading" /> });
 
-type Screen = 'home' | 'search' | 'route' | 'nav' | 'arrive' | 'reports' | 'report' | 'prefs' | 'about' | 'signin';
+type Screen = 'home' | 'search' | 'route' | 'nav' | 'arrive' | 'reports' | 'report' | 'prefs' | 'about';
 type Community = { h: Hazard; r: Report }[];
 type Mode = 'demo' | 'gps';
 /** demo runs on simulated time along the route; gps follows the device */
@@ -31,7 +30,7 @@ function loadArr<T>(k: string): T[] { try { const v = localStorage.getItem(LS + 
 function save(k: string, v: unknown) { try { localStorage.setItem(LS + ':' + k, JSON.stringify(v)); } catch { /* storage blocked */ } }
 const ll5 = (ll: LngLat) => `${ll[1].toFixed(5)}° N, ${ll[0].toFixed(5)}° E`;
 
-export default function WheelPathApp() {
+export default function WheelPathApp({ session }: { session: Session }) {
   const [net, setNet] = useState<Network | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const fetchNet = useCallback(() => {
@@ -48,10 +47,10 @@ export default function WheelPathApp() {
       <p className="boot-sub">Real streets near {AREA.name} come from OpenStreetMap. The accessibility data on them is simulated.</p>
     </div>
   );
-  return <App net={net} />;
+  return <App net={net} initialSession={session} />;
 }
 
-function App({ net }: { net: Network }) {
+function App({ net, initialSession }: { net: Network; initialSession: Session }) {
   const engine = useMemo(() => new Engine(net), [net]);
   useEffect(() => { (window as unknown as { wheelpath: unknown }).wheelpath = { engine, net }; }, [engine, net]);
 
@@ -69,7 +68,7 @@ function App({ net }: { net: Network }) {
   /** reports sent from this browser (any status), so people can see whether theirs was approved */
   const [myIds, setMyIds] = useState<string[]>([]);
   const [mine, setMine] = useState<PublicReport[]>([]);
-  const { session, signIn, signOut } = useSession();
+  const { session, signOut } = useSession(initialSession);
   const [hazardRev, setHazardRev] = useState(0);
   const [selected, setSelected] = useState<Feature>(null);
   const [dest, setDest] = useState<Place | null>(null);
@@ -445,7 +444,7 @@ function App({ net }: { net: Network }) {
         <button className="icon-btn" aria-label="About this app" onClick={() => go('about')}><Icon name="info" /></button>
         {session
           ? <button className="avatar" onClick={() => go('prefs')} aria-label={`Signed in as ${session.name}. Open settings`} title={session.email}>{session.name.slice(0, 1).toUpperCase()}</button>
-          : <button className="btn line sm" onClick={() => go('signin')}>Sign in</button>}
+          : <a className="btn line sm" href="/">Sign in</a>}
       </header>
     );
   }
@@ -625,8 +624,8 @@ function App({ net }: { net: Network }) {
       <h2 className="sec">Account</h2>
       <div className="group">{session
         ? <><div className="acct"><span className="avatar lg" aria-hidden="true">{session.name.slice(0, 1).toUpperCase()}</span><span className="grow"><b>{session.name}</b><small>{session.email}{session.role === 'admin' ? ' · Admin' : ''}</small></span></div>
-          <div className="acct-actions">{session.role === 'admin' && <a className="btn sm" href="/admin"><Icon name="shield" size={18} /> Open admin dashboard</a>}<button className="btn line sm" onClick={async () => { await signOut(); say('Signed out.'); }}>Sign out</button></div></>
-        : <div className="acct"><span className="grow"><b>Not signed in</b><small>Optional. Sign in so your name is shown on the reports you send.</small></span><button className="btn sm" onClick={() => go('signin')}>Sign in</button></div>}</div>
+          <div className="acct-actions">{session.role === 'admin' && <a className="btn sm" href="/admin"><Icon name="shield" size={18} /> Open admin dashboard</a>}<button className="btn line sm" onClick={async () => { await signOut(); window.location.assign('/'); }}><Icon name="logout" size={18} /> Sign out</button></div></>
+        : <div className="acct"><span className="grow"><b>Not signed in</b></span><a className="btn sm" href="/">Sign in</a></div>}</div>
       <h2 className="sec">My routes</h2>
       <div className="group">{t(prefs.stairs, pf('stairs'), 'Avoid stairs')}{t(prefs.steep, pf('steep'), 'Avoid steep slopes')}{t(prefs.ramps, pf('ramps'), 'Prefer curb ramps')}{t(prefs.shortest, pf('shortest'), 'Prefer shorter routes', 'Distance counts more than comfort')}</div>
       <h2 className="sec">Location</h2>
@@ -636,12 +635,6 @@ function App({ net }: { net: Network }) {
       <div className="legend"><span><i style={{ background: '#2E9E63' }} />Good</span><span><i style={{ background: '#F2A900' }} />Fair</span><span><i style={{ background: '#E0312F' }} />Difficult or blocked</span><span><i className="dash" />No data</span></div>
       <button className="btn line" onClick={() => go('about')}>About this app</button>
       {tabbar()}</div>);
-  } else if (screen === 'signin') {
-    page = <SignIn onBack={() => go('prefs')} onSignIn={async (email, password) => {
-      const s2 = await signIn(email, password);
-      if (s2.role === 'admin') { window.location.href = '/admin'; return; }
-      go('prefs'); say(`Signed in as ${s2.name}.`);
-    }} />;
   } else if (screen === 'about') {
     page = (<div className="page prose"><div className="pagehead row gap">{back(() => go('home'))}<h1 className="grow h-sm">About WheelPath</h1></div>
       <p>WheelPath helps wheelchair users find the most accessible route. It checks each path for width, slope, surface, curb ramps and reported problems.</p>

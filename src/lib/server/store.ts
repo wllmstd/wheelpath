@@ -31,7 +31,10 @@ function supabase(): Store {
   if (key.startsWith('eyJ')) auth.Authorization = `Bearer ${key}`; // legacy JWT service_role key
   const rest = async (q: string, init: RequestInit = {}) => {
     const r = await fetch(`${url}/rest/v1/reports${q}`, { ...init, cache: 'no-store', headers: { ...auth, 'Content-Type': 'application/json', Prefer: 'return=representation', ...(init.headers || {}) } });
-    if (!r.ok) throw new StoreError(`Database error (${r.status}): ${(await r.text()).slice(0, 200)}`, 502);
+    if (!r.ok) {
+      console.error(`[wheelpath] database request failed (${r.status}): ${(await r.text()).slice(0, 300)}`);
+      throw new StoreError('The report service is not available right now. Please try again in a moment.', 502);
+    }
     return r.status === 204 ? [] : ((await r.json()) as StoredReport[]);
   };
   const enc = encodeURIComponent;
@@ -50,7 +53,11 @@ function supabase(): Store {
       if (photo) {
         photo_path = `${id}.${photo.ext}`;
         const up = await fetch(`${url}/storage/v1/object/${BUCKET}/${photo_path}`, { method: 'POST', headers: { ...auth, 'Content-Type': photo.contentType, 'x-upsert': 'true' }, body: new Uint8Array(photo.data) });
-        if (!up.ok) throw new StoreError(`Photo upload failed (${up.status}): ${(await up.text()).slice(0, 200)}`, 502);
+        if (!up.ok) {
+          // the details go to the server log (Vercel -> Logs); people see a plain message
+          console.error(`[wheelpath] photo upload to bucket "${BUCKET}" failed (${up.status}): ${(await up.text()).slice(0, 300)}`);
+          throw new StoreError('Your photo could not be uploaded. Try again, or remove the photo and send the report without it.', 502);
+        }
         photo_url = `${url}/storage/v1/object/public/${BUCKET}/${photo_path}`;
       }
       return (await rest('', { method: 'POST', body: JSON.stringify({ id, ...r, status: 'pending', photo_url, photo_path }) }))[0];

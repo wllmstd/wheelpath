@@ -47,8 +47,16 @@ Refresh the snapshot with `npm run fetch-streets` (retries with back-off when th
 ## Reports, photos and the admin dashboard
 
 - Anyone can report a problem, with an optional photo (phones can take one with the camera). A report starts as **pending** and is **not** shown on the map or used for routing until an admin approves it. After sending, the app shows a "waiting for approval" message, and the Problems tab lists the person's own reports with their status.
-- **Admin dashboard**: `/admin` (or Settings → Sign in). Sign in with `admin@wheelpath.com` and any password. Admins can approve, reject (with an optional reason), mark as fixed, hide from the map, edit (problem, severity, notes, and the location by dragging the pin) or delete a report. It works on phones and on wide screens.
-- **Sign-in is a prototype**: any email and password are accepted, and `admin@wheelpath.com` is the admin. The session is a signed cookie (`SESSION_SECRET`), but there is no password check. Replace it with real accounts (for example Supabase Auth) before a public launch.
+- **Sign-in required**: people must sign in before they see the map (`/` shows the sign-in screen until then). Sign out is in Settings → Account. Sending reports also requires sign-in.
+- **Only two accounts can sign in**; every other email is refused:
+
+  | Account | Role | Password comes from |
+  |---|---|---|
+  | `admin@wheelpath.com` | Admin (opens `/admin`) | `WHEELPATH_ADMIN_PASSWORD` |
+  | `user@wheelpath.com` | User | `WHEELPATH_USER_PASSWORD` |
+
+  The passwords are environment variables (Vercel settings, or `.env.local` on your computer), so they never appear in the code on GitHub. The session is a cookie signed with `SESSION_SECRET`.
+- **Admin dashboard**: `/admin`. Admins can approve, reject (with an optional reason), mark as fixed, hide from the map, edit (problem, severity, notes, and the location by dragging the pin) or delete a report. It works on phones and on wide screens.
 - Photos are resized in the browser (longest side 1600 px, JPEG) before upload, then checked on the server (JPEG, PNG or WebP, 6 MB at most).
 
 ### Storage: Supabase
@@ -57,7 +65,7 @@ Refresh the snapshot with `npm run fetch-streets` (retries with back-off when th
 2. In the SQL Editor, run [`supabase/schema.sql`](supabase/schema.sql). It creates the `reports` table (row-level security on, no public access) and the public `report-photos` bucket.
 3. In Project Settings → API, copy the Project URL and the **service_role** (or **secret**) key.
 4. Put them in `.env.local` for local work, and in Vercel → Project → Settings → Environment Variables for the live site:
-   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and a long random `SESSION_SECRET`. Redeploy after adding them.
+   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, a long random `SESSION_SECRET`, `WHEELPATH_ADMIN_PASSWORD` and `WHEELPATH_USER_PASSWORD`. Redeploy after adding them.
 
 Without Supabase settings, `npm run dev` keeps reports in a local `.wheelpath-data/` folder (ignored by git), so you can try everything offline. On Vercel the app refuses to save reports until Supabase is configured, because Vercel's disk is not permanent.
 
@@ -99,5 +107,4 @@ In the browser console, `window.wheelpath.engine` exposes the routing engine and
 
 - Live push of new reports (the app checks for newly approved reports every minute and when the tab is reopened).
 - Importing real survey data (GeoJSON of segments with width, slope, surface; curb-ramp points; hazards) in place of the simulated layer.
-- Real accounts with passwords (sign-in is a prototype; see above).
 - Comments on reports are kept in the browser only.
