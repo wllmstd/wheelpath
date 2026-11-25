@@ -13,7 +13,7 @@ Accessibility-first pedestrian navigation for wheelchair users. Research prototy
 Simulated values exist only inside a 500 m circle around the school, and are generated deterministically from OpenStreetMap way IDs, so everyone sees the same values. Stretches with no data are never rated accessible. **This is not a field survey.** The scoring thresholds are prototype defaults and must be confirmed against the NCDA 2024 Revised IRR checklist (BP 344).
 
 ## Run it
-
+ 
 Requires Node.js 20.9 or newer.
 
 ```bash
